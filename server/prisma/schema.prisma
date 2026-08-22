@@ -1,0 +1,159 @@
+// Prisma schema for Healthcare Appointment & Follow-up Manager
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  DOCTOR
+  PATIENT
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum UrgencyLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ReminderStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  password      String
+  name          String
+  phone         String?
+  role          Role     @default(PATIENT)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  doctorProfile     DoctorProfile? @relation("UserDoctorProfile")
+  patientAppointments  Appointment[] @relation("PatientAppointments")
+  doctorAppointments   Appointment[] @relation("DoctorAppointments")
+  medicationReminders  MedicationReminder[]
+
+  // Google Calendar OAuth tokens (per-user, used to sync appointments)
+  googleAccessToken  String?
+  googleRefreshToken String?
+  googleTokenExpiry  DateTime?
+
+  @@map("users")
+}
+
+model DoctorProfile {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation("UserDoctorProfile", fields: [userId], references: [id], onDelete: Cascade)
+  specialization String
+  bio            String?
+
+  // Working hours, e.g. "09:00"-"17:00"
+  workingHoursStart String  @default("09:00")
+  workingHoursEnd   String  @default("17:00")
+  // Days of week the doctor is available, 0=Sunday..6=Saturday
+  workingDays       Int[]   @default([1, 2, 3, 4, 5])
+
+  slotDurationMinutes Int    @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  leaves DoctorLeave[]
+
+  @@map("doctor_profiles")
+}
+
+model DoctorLeave {
+  id        String   @id @default(uuid())
+  doctorId  String
+  doctor    DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  startDate DateTime
+  endDate   DateTime
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@map("doctor_leaves")
+  @@index([doctorId])
+}
+
+model Appointment {
+  id     String @id @default(uuid())
+
+  patientId String
+  patient   User   @relation("PatientAppointments", fields: [patientId], references: [id], onDelete: Cascade)
+
+  doctorId String
+  doctor   User   @relation("DoctorAppointments", fields: [doctorId], references: [id], onDelete: Cascade)
+
+  scheduledAt     DateTime
+  durationMinutes Int      @default(30)
+  status          AppointmentStatus @default(PENDING)
+
+  // Pre-visit
+  symptoms         String?
+  urgencyLevel     UrgencyLevel?
+  preVisitSummary  String?  // LLM-generated: urgency, chief complaint, suggested questions
+
+  // Post-visit
+  postVisitNotes   String?  // raw clinical notes entered by doctor
+  postVisitSummary String?  // LLM-generated patient-friendly summary + med schedule + follow-up
+
+  googleCalendarEventId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  medicationReminders MedicationReminder[]
+
+  @@map("appointments")
+  @@index([doctorId, scheduledAt])
+  @@index([patientId])
+  // Prevent double-booking the same doctor at the same exact start time
+  @@unique([doctorId, scheduledAt])
+}
+
+model MedicationReminder {
+  id     String @id @default(uuid())
+
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   User   @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  medicationName String
+  dosage         String?
+  intervalHours  Int      @default(24)
+  startDate      DateTime
+  endDate        DateTime?
+
+  lastSentAt DateTime?
+  nextSendAt DateTime?
+  status     ReminderStatus @default(PENDING)
+  retryCount Int            @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("medication_reminders")
+  @@index([patientId])
+  @@index([nextSendAt])
+}
