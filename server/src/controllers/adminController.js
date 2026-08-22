@@ -81,4 +81,90 @@ async function createDoctor(req, res, next) {
   }
 }
 
-module.exports = { createDoctor };
+const ACTIVE_APPOINTMENT_STATUSES = ['PENDING', 'CONFIRMED'];
+
+// A bare "YYYY-MM-DD" date has no time component; when it marks the end of
+// a leave range we want it to cover the whole day, so push it to 23:59:59.999.
+function parseDateBoundary(value, isEnd) {
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  if (isDateOnly && isEnd) {
+    date.setUTCHours(23, 59, 59, 999);
+  }
+  return date;
+}
+
+// Marks a doctor on leave for a date range and cancels every existing
+// PENDING/CONFIRMED appointment that falls within it, returning the list of
+// affected patients (with their appointment details) so they can be notified.
+async function markDoctorLeave(req, res, next) {
+  try {
+    const { doctorId } = req.params;
+    const { startDate, endDate, reason } = req.body;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'startDate and endDate are required' });
+    }
+
+    const start = parseDateBoundary(startDate, false);
+    const end = parseDateBoundary(endDate, true);
+    if (!start || !end) {
+      return res.status(400).json({ error: 'startDate and endDate must be valid dates' });
+    }
+    if (end < start) {
+      return res.status(400).json({ error: 'endDate must be on or after startDate' });
+    }
+
+    const doctor = await prisma.user.findFirst({
+      where: { id: doctorId, role: 'DOCTOR' },
+      include: { doctorProfile: true },
+    });
+    if (!doctor || !doctor.doctorProfile) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+
+    const { leave, affectedAppointments } = await prisma.$transaction(async (tx) => {
+      const createdLeave = await tx.doctorLeave.create({
+        data: {
+          doctorId: doctor.doctorProfile.id,
+          startDate: start,
+          endDate: end,
+          reason,
+        },
+      });
+
+      const appointmentsToCancel = await tx.appointment.findMany({
+        where: {
+          doctorId: doctor.id,
+          scheduledAt: { gte: start, lte: end },
+          status: { in: ACTIVE_APPOINTMENT_STATUSES },
+        },
+        include: {
+          patient: { select: { id: true, name: true, email: true, phone: true } },
+        },
+      });
+
+      if (appointmentsToCancel.length > 0) {
+        await tx.appointment.updateMany({
+          where: { id: { in: appointmentsToCancel.map((a) => a.id) } },
+          data: { status: 'CANCELLED' },
+        });
+      }
+
+      return { leave: createdLeave, affectedAppointments: appointmentsToCancel };
+    });
+
+    const affectedPatients = affectedAppointments.map((appt) => ({
+      appointmentId: appt.id,
+      scheduledAt: appt.scheduledAt,
+      patient: appt.patient,
+    }));
+
+    res.status(201).json({ leave, affectedPatients });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { createDoctor, markDoctorLeave };

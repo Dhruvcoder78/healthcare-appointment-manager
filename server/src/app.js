@@ -5,6 +5,7 @@ const cors = require('cors');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const doctorRoutes = require('./routes/doctorRoutes');
+const appointmentRoutes = require('./routes/appointmentRoutes');
 
 const app = express();
 
@@ -18,6 +19,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/doctors', doctorRoutes);
+app.use('/api/appointments', appointmentRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -26,7 +28,7 @@ app.use((req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+  res.status(err.statusCode || err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
 module.exports = app;
