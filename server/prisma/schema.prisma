@@ -118,7 +118,10 @@ model Appointment {
   followUpInDays   Int?     // LLM-extracted number of days until recommended follow-up
   followUpDate     DateTime? // scheduledAt + followUpInDays, computed on post-visit summary generation
 
-  googleCalendarEventId String?
+  patientCalendarEventId String? // Google Calendar event id on the patient's calendar
+  doctorCalendarEventId  String? // Google Calendar event id on the doctor's calendar
+
+  reminderSentAt DateTime? // set once the upcoming-appointment reminder email has gone out
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

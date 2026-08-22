@@ -4,8 +4,11 @@ const { AppError } = require('../utils/errors');
 const { withSerializableRetry } = require('../utils/withRetry');
 const { isWithinWorkingHours, isAlignedToSlotGrid } = require('../utils/scheduling');
 const { generatePreVisitSummary, generatePostVisitSummary } = require('../services/llmService');
+const { sendBookingConfirmation, sendCancellationNotice, sendRescheduleNotice } = require('../services/notificationService');
+const { syncEventsForAppointment, deleteEventsForAppointment } = require('../services/googleCalendarService');
 
 const BLOCKING_STATUSES = ['PENDING', 'CONFIRMED', 'COMPLETED'];
+const RESCHEDULABLE_STATUSES = ['PENDING', 'CONFIRMED'];
 
 // Books an appointment for the authenticated patient, guaranteeing that two
 // concurrent requests for the same doctor + timestamp can never both succeed.
@@ -108,7 +111,18 @@ async function bookAppointment(req, res, next) {
       )
     );
 
-    res.status(201).json({ appointment });
+    const patientUser = await prisma.user.findUnique({ where: { id: req.user.id } });
+
+    // Best-effort side effects: email delivery and calendar sync must never
+    // fail the booking itself (both services are internally non-throwing).
+    await sendBookingConfirmation(appointment, patientUser, doctor);
+
+    const calendarChanges = await syncEventsForAppointment(appointment, patientUser, doctor);
+    const finalAppointment = Object.keys(calendarChanges).length
+      ? await prisma.appointment.update({ where: { id: appointment.id }, data: calendarChanges })
+      : appointment;
+
+    res.status(201).json({ appointment: finalAppointment });
   } catch (err) {
     if (err instanceof AppError) {
       return res.status(err.statusCode).json({ error: err.message });
@@ -213,4 +227,138 @@ async function postVisitSummary(req, res, next) {
   }
 }
 
-module.exports = { bookAppointment, preVisitSummary, postVisitSummary };
+// Cancels an appointment: the owning patient, the assigned doctor, or an
+// admin may cancel. Deletes both calendar events and emails both parties —
+// neither can fail the cancellation itself.
+async function cancelAppointment(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: { patient: true, doctor: true },
+    });
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const isOwner = req.user.id === appointment.patientId || req.user.id === appointment.doctorId;
+    if (!isOwner && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (['CANCELLED', 'COMPLETED', 'NO_SHOW'].includes(appointment.status)) {
+      return res.status(400).json({ error: `Cannot cancel a ${appointment.status.toLowerCase()} appointment` });
+    }
+
+    const updated = await prisma.appointment.update({
+      where: { id },
+      data: { status: 'CANCELLED' },
+    });
+
+    await deleteEventsForAppointment(appointment, appointment.patient, appointment.doctor);
+    await sendCancellationNotice(updated, appointment.patient, appointment.doctor, reason);
+
+    res.json({ appointment: updated });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Reschedules an appointment to a new time, guaranteeing (via the same
+// Serializable-transaction + unique-index strategy as booking) that it can
+// never collide with another active appointment for that doctor.
+async function rescheduleAppointment(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { scheduledAt } = req.body;
+
+    if (!scheduledAt) {
+      return res.status(400).json({ error: 'scheduledAt is required' });
+    }
+
+    const newDate = new Date(scheduledAt);
+    if (Number.isNaN(newDate.getTime())) {
+      return res.status(400).json({ error: 'scheduledAt must be a valid ISO date string' });
+    }
+    if (newDate.getTime() <= Date.now()) {
+      return res.status(400).json({ error: 'scheduledAt must be in the future' });
+    }
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: { patient: true, doctor: { include: { doctorProfile: true } } },
+    });
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const isOwner = req.user.id === appointment.patientId || req.user.id === appointment.doctorId;
+    if (!isOwner) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (!RESCHEDULABLE_STATUSES.includes(appointment.status)) {
+      return res.status(400).json({ error: `Cannot reschedule a ${appointment.status.toLowerCase()} appointment` });
+    }
+
+    const doctorProfile = appointment.doctor.doctorProfile;
+    if (!isWithinWorkingHours(newDate, doctorProfile)) {
+      return res.status(400).json({ error: "Requested time is outside the doctor's working hours" });
+    }
+    if (!isAlignedToSlotGrid(newDate, doctorProfile)) {
+      return res.status(400).json({ error: `Requested time must align to ${doctorProfile.slotDurationMinutes}-minute slots` });
+    }
+
+    const onLeave = await prisma.doctorLeave.findFirst({
+      where: { doctorId: doctorProfile.id, startDate: { lte: newDate }, endDate: { gte: newDate } },
+    });
+    if (onLeave) {
+      return res.status(409).json({ error: 'Doctor is on leave at the requested time' });
+    }
+
+    const previousScheduledAt = appointment.scheduledAt;
+
+    const rescheduled = await withSerializableRetry(() =>
+      prisma.$transaction(
+        async (tx) => {
+          const conflict = await tx.appointment.findUnique({
+            where: { doctorId_scheduledAt: { doctorId: appointment.doctorId, scheduledAt: newDate } },
+          });
+
+          if (conflict && conflict.id !== appointment.id) {
+            if (BLOCKING_STATUSES.includes(conflict.status)) {
+              throw new AppError(409, 'This time slot is already booked');
+            }
+            // Stale cancelled/no-show row occupying the target slot — clear it so the move can happen.
+            await tx.appointment.delete({ where: { id: conflict.id } });
+          }
+
+          return tx.appointment.update({
+            where: { id: appointment.id },
+            data: { scheduledAt: newDate, status: 'PENDING' },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+      )
+    );
+
+    await sendRescheduleNotice(rescheduled, appointment.patient, appointment.doctor, previousScheduledAt);
+
+    const calendarChanges = await syncEventsForAppointment(rescheduled, appointment.patient, appointment.doctor);
+    const finalAppointment = Object.keys(calendarChanges).length
+      ? await prisma.appointment.update({ where: { id: rescheduled.id }, data: calendarChanges })
+      : rescheduled;
+
+    res.json({ appointment: finalAppointment });
+  } catch (err) {
+    if (err instanceof AppError) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    if (err.code === 'P2002' || err.code === 'P2034') {
+      return res.status(409).json({ error: 'This time slot is already booked' });
+    }
+    next(err);
+  }
+}
+
+module.exports = { bookAppointment, preVisitSummary, postVisitSummary, cancelAppointment, rescheduleAppointment };

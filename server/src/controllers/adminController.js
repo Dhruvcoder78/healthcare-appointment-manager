@@ -1,6 +1,8 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const { SALT_ROUNDS, sanitizeUser } = require('./authController');
+const { sendCancellationNotice } = require('../services/notificationService');
+const { deleteEventsForAppointment } = require('../services/googleCalendarService');
 
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
@@ -140,9 +142,7 @@ async function markDoctorLeave(req, res, next) {
           scheduledAt: { gte: start, lte: end },
           status: { in: ACTIVE_APPOINTMENT_STATUSES },
         },
-        include: {
-          patient: { select: { id: true, name: true, email: true, phone: true } },
-        },
+        include: { patient: true },
       });
 
       if (appointmentsToCancel.length > 0) {
@@ -155,10 +155,19 @@ async function markDoctorLeave(req, res, next) {
       return { leave: createdLeave, affectedAppointments: appointmentsToCancel };
     });
 
+    // Best-effort: neither calendar cleanup nor emailing affected patients
+    // should fail the leave-creation request itself.
+    await Promise.all(
+      affectedAppointments.map(async (appt) => {
+        await deleteEventsForAppointment(appt, appt.patient, doctor);
+        await sendCancellationNotice(appt, appt.patient, doctor, reason || 'Doctor is on leave');
+      })
+    );
+
     const affectedPatients = affectedAppointments.map((appt) => ({
       appointmentId: appt.id,
       scheduledAt: appt.scheduledAt,
-      patient: appt.patient,
+      patient: sanitizeUser(appt.patient),
     }));
 
     res.status(201).json({ leave, affectedPatients });
