@@ -115,6 +115,8 @@ model Appointment {
   // Post-visit
   postVisitNotes   String?  // raw clinical notes entered by doctor
   postVisitSummary String?  // LLM-generated patient-friendly summary + med schedule + follow-up
+  followUpInDays   Int?     // LLM-extracted number of days until recommended follow-up
+  followUpDate     DateTime? // scheduledAt + followUpInDays, computed on post-visit summary generation
 
   googleCalendarEventId String?
 
