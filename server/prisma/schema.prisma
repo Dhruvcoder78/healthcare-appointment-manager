@@ -23,12 +23,6 @@ enum AppointmentStatus {
   NO_SHOW
 }
 
-enum UrgencyLevel {
-  LOW
-  MEDIUM
-  HIGH
-}
-
 enum ReminderStatus {
   PENDING
   SENT
@@ -127,15 +121,15 @@ model Appointment {
   status          AppointmentStatus @default(PENDING)
 
   // Pre-visit
-  symptoms        String?
-  urgencyLevel    UrgencyLevel?
-  preVisitSummary String? // LLM-generated: urgency, chief complaint, suggested questions
+  symptoms          String?
+  triageLevel       String? // AI-derived urgency: LOW | MEDIUM | HIGH
+  aiPreVisitSummary String? // LLM-generated: urgency, chief complaint, suggested questions (JSON)
 
   // Post-visit
-  postVisitNotes   String? // raw clinical notes entered by doctor
-  postVisitSummary String? // LLM-generated patient-friendly summary + med schedule + follow-up
-  followUpInDays   Int? // LLM-extracted number of days until recommended follow-up
-  followUpDate     DateTime? // scheduledAt + followUpInDays, computed on post-visit summary generation
+  doctorNotes        String? // raw clinical notes entered by doctor
+  aiPostVisitSummary String? // LLM-generated patient-friendly summary + med schedule + follow-up
+  followUpInDays     Int? // LLM-extracted number of days until recommended follow-up
+  followUpDate       DateTime? // scheduledAt + followUpInDays, computed on post-visit summary generation
 
   patientCalendarEventId String? // Google Calendar event id on the patient's calendar
   doctorCalendarEventId  String? // Google Calendar event id on the doctor's calendar

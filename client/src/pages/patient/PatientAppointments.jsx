@@ -46,8 +46,8 @@ function AppointmentCard({ appointment, onChanged }) {
   const [error, setError] = useState('');
   const [rescheduling, setRescheduling] = useState(false);
 
-  const preVisit = safeParseJSON(appointment.preVisitSummary);
-  const postVisit = safeParseJSON(appointment.postVisitSummary);
+  const preVisit = safeParseJSON(appointment.aiPreVisitSummary);
+  const postVisit = safeParseJSON(appointment.aiPostVisitSummary);
   const canModify = ['PENDING', 'CONFIRMED'].includes(appointment.status);
 
   async function handleGenerateSummary() {
@@ -93,11 +93,11 @@ function AppointmentCard({ appointment, onChanged }) {
         </p>
       )}
 
-      {preVisit && (
+      {appointment.aiPreVisitSummary && preVisit && (
         <div className="mt-3 rounded-md bg-slate-50 p-3 text-sm">
           <div className="mb-1 flex items-center gap-2">
             <span className="font-medium text-slate-700">AI pre-visit summary</span>
-            <Badge tone={URGENCY_TONE[preVisit.urgencyLevel] || 'slate'}>{preVisit.urgencyLevel}</Badge>
+            <Badge tone={URGENCY_TONE[appointment.triageLevel] || 'slate'}>{appointment.triageLevel}</Badge>
           </div>
           <p className="text-slate-600">{preVisit.chiefComplaint}</p>
           {preVisit.suggestedQuestions?.length > 0 && (
@@ -110,25 +110,28 @@ function AppointmentCard({ appointment, onChanged }) {
         </div>
       )}
 
-      {postVisit && (
-        <div className="mt-3 rounded-md bg-green-50 p-3 text-sm">
-          <p className="mb-1 font-medium text-green-800">Post-visit summary</p>
-          <p className="text-green-700">{postVisit.patientSummary}</p>
-          {postVisit.medicationSchedule?.length > 0 && (
-            <ul className="mt-2 list-inside list-disc text-green-700">
-              {postVisit.medicationSchedule.map((m, i) => (
-                <li key={i}>
-                  {m.medication} {m.dosage && `(${m.dosage})`} — {m.schedule}
-                </li>
-              ))}
-            </ul>
-          )}
-          {postVisit.followUpSteps && <p className="mt-2 text-green-700">{postVisit.followUpSteps}</p>}
-          {appointment.followUpDate && (
-            <p className="mt-1 text-xs text-green-600">Follow up by {formatDateTime(appointment.followUpDate)}</p>
-          )}
-        </div>
-      )}
+      {appointment.status === 'COMPLETED' &&
+        (appointment.aiPostVisitSummary && postVisit ? (
+          <div className="mt-3 rounded-md bg-green-50 p-3 text-sm">
+            <p className="mb-1 font-medium text-green-800">Post-visit summary</p>
+            <p className="text-green-700">{postVisit.patientSummary}</p>
+            {postVisit.medicationSchedule?.length > 0 && (
+              <ul className="mt-2 list-inside list-disc text-green-700">
+                {postVisit.medicationSchedule.map((m, i) => (
+                  <li key={i}>
+                    {m.medication} {m.dosage && `(${m.dosage})`} — {m.schedule}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {postVisit.followUpSteps && <p className="mt-2 text-green-700">{postVisit.followUpSteps}</p>}
+            {appointment.followUpDate && (
+              <p className="mt-1 text-xs text-green-600">Follow up by {formatDateTime(appointment.followUpDate)}</p>
+            )}
+          </div>
+        ) : (
+          <p className="mt-2 text-xs text-slate-400">No post-visit summary available yet.</p>
+        ))}
 
       <Alert>{error}</Alert>
 

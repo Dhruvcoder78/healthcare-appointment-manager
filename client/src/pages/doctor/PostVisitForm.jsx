@@ -17,7 +17,7 @@ export default function PostVisitForm({ appointment, onSubmitted }) {
     }
     setLoading(true);
     try {
-      await submitPostVisitSummary(appointment.id, { notes });
+      await submitPostVisitSummary(appointment.id, { doctorNotes: notes });
       setNotes('');
       onSubmitted();
     } catch (err) {

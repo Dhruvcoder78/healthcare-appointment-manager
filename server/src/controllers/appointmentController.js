@@ -86,10 +86,10 @@ async function bookAppointment(req, res, next) {
                 patientId: req.user.id,
                 status: 'PENDING',
                 symptoms: symptoms || null,
-                urgencyLevel: null,
-                preVisitSummary: null,
-                postVisitNotes: null,
-                postVisitSummary: null,
+                triageLevel: null,
+                aiPreVisitSummary: null,
+                doctorNotes: null,
+                aiPostVisitSummary: null,
                 followUpInDays: null,
                 followUpDate: null,
                 durationMinutes: doctor.doctorProfile.slotDurationMinutes,
@@ -114,14 +114,29 @@ async function bookAppointment(req, res, next) {
 
     const patientUser = await prisma.user.findUnique({ where: { id: req.user.id } });
 
-    // Best-effort side effects: email delivery and calendar sync must never
-    // fail the booking itself (both services are internally non-throwing).
+    // Best-effort side effects: email delivery, calendar sync, and the AI
+    // pre-visit analysis must never fail the booking itself.
     await sendBookingConfirmation(appointment, patientUser, doctor);
 
     const calendarChanges = await syncEventsForAppointment(appointment, patientUser, doctor);
-    const finalAppointment = Object.keys(calendarChanges).length
+    let finalAppointment = Object.keys(calendarChanges).length
       ? await prisma.appointment.update({ where: { id: appointment.id }, data: calendarChanges })
       : appointment;
+
+    if (appointment.symptoms) {
+      try {
+        const aiResult = await generatePreVisitSummary(appointment.symptoms);
+        finalAppointment = await prisma.appointment.update({
+          where: { id: appointment.id },
+          data: {
+            triageLevel: aiResult.data.urgencyLevel,
+            aiPreVisitSummary: JSON.stringify(aiResult.data),
+          },
+        });
+      } catch (aiErr) {
+        console.error('[bookAppointment] AI pre-visit analysis failed:', aiErr.message);
+      }
+    }
 
     res.status(201).json({ appointment: finalAppointment });
   } catch (err) {
@@ -164,8 +179,8 @@ async function preVisitSummary(req, res, next) {
       where: { id },
       data: {
         symptoms: symptomsText,
-        urgencyLevel: result.data.urgencyLevel,
-        preVisitSummary: JSON.stringify(result.data),
+        triageLevel: result.data.urgencyLevel,
+        aiPreVisitSummary: JSON.stringify(result.data),
       },
     });
 
@@ -185,10 +200,10 @@ async function preVisitSummary(req, res, next) {
 async function postVisitSummary(req, res, next) {
   try {
     const { id } = req.params;
-    const { notes } = req.body;
+    const { doctorNotes } = req.body;
 
-    if (!notes) {
-      return res.status(400).json({ error: 'notes are required' });
+    if (!doctorNotes) {
+      return res.status(400).json({ error: 'doctorNotes are required' });
     }
 
     const appointment = await prisma.appointment.findUnique({ where: { id } });
@@ -199,7 +214,7 @@ async function postVisitSummary(req, res, next) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const result = await generatePostVisitSummary(notes);
+    const result = await generatePostVisitSummary(doctorNotes);
 
     let followUpDate = null;
     if (Number.isInteger(result.data.followUpInDays)) {
@@ -210,8 +225,8 @@ async function postVisitSummary(req, res, next) {
     const updated = await prisma.appointment.update({
       where: { id },
       data: {
-        postVisitNotes: notes,
-        postVisitSummary: JSON.stringify(result.data),
+        doctorNotes,
+        aiPostVisitSummary: JSON.stringify(result.data),
         followUpInDays: result.data.followUpInDays,
         followUpDate,
         status: 'COMPLETED',
@@ -362,7 +377,29 @@ async function rescheduleAppointment(req, res, next) {
   }
 }
 
-const APPOINTMENT_LIST_INCLUDE = {
+// Explicit select (rather than include, which would return every scalar
+// implicitly) so the AI-generated fields the Doctor Portal reads —
+// aiPreVisitSummary, triageLevel, aiPostVisitSummary — are guaranteed
+// present in the response regardless of future schema additions.
+const APPOINTMENT_SELECT = {
+  id: true,
+  patientId: true,
+  doctorId: true,
+  scheduledAt: true,
+  durationMinutes: true,
+  status: true,
+  symptoms: true,
+  triageLevel: true,
+  aiPreVisitSummary: true,
+  doctorNotes: true,
+  aiPostVisitSummary: true,
+  followUpInDays: true,
+  followUpDate: true,
+  patientCalendarEventId: true,
+  doctorCalendarEventId: true,
+  reminderSentAt: true,
+  createdAt: true,
+  updatedAt: true,
   patient: { select: { id: true, name: true, email: true, phone: true } },
   doctor: {
     select: {
@@ -394,7 +431,7 @@ async function listMyAppointments(req, res, next) {
 
     const appointments = await prisma.appointment.findMany({
       where,
-      include: APPOINTMENT_LIST_INCLUDE,
+      select: APPOINTMENT_SELECT,
       orderBy: { scheduledAt: 'asc' },
     });
 
@@ -409,7 +446,7 @@ async function getAppointmentById(req, res, next) {
     const { id } = req.params;
     const appointment = await prisma.appointment.findUnique({
       where: { id },
-      include: APPOINTMENT_LIST_INCLUDE,
+      select: APPOINTMENT_SELECT,
     });
     if (!appointment) {
       return res.status(404).json({ error: 'Appointment not found' });
