@@ -29,11 +29,16 @@ export function AuthProvider({ children }) {
     return loggedInUser;
   }, []);
 
+  // A doctor self-registration doesn't return a token — the account is
+  // pending admin approval and can't log in yet. Only auto-login when a
+  // token actually comes back (patient registration).
   const register = useCallback(async (payload) => {
-    const { token, user: registeredUser } = await authApi.register(payload);
-    localStorage.setItem('token', token);
-    setUser(registeredUser);
-    return registeredUser;
+    const response = await authApi.register(payload);
+    if (response.token) {
+      localStorage.setItem('token', response.token);
+      setUser(response.user);
+    }
+    return response;
   }, []);
 
   const logout = useCallback(() => {

@@ -9,9 +9,10 @@ async function searchDoctors(req, res, next) {
     const doctors = await prisma.user.findMany({
       where: {
         role: 'DOCTOR',
-        doctorProfile: specialization
-          ? { specialization: { contains: specialization, mode: 'insensitive' } }
-          : { isNot: null },
+        doctorProfile: {
+          approved: true,
+          ...(specialization && { specialization: { contains: specialization, mode: 'insensitive' } }),
+        },
       },
       select: {
         id: true,

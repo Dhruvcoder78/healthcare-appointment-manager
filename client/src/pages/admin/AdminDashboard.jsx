@@ -43,7 +43,7 @@ export default function AdminDashboard() {
           ) : error ? (
             <Alert>{error}</Alert>
           ) : (
-            <DoctorsList doctors={doctors} />
+            <DoctorsList doctors={doctors} onChanged={fetchDoctors} />
           )}
         </div>
       </div>

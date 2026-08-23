@@ -71,6 +71,7 @@ async function createDoctor(req, res, next) {
             ...(workingHoursEnd && { workingHoursEnd }),
             ...(workingDays && { workingDays }),
             ...(slotDurationMinutes && { slotDurationMinutes }),
+            approved: true, // admin is creating this account directly, so it's pre-vetted
           },
         },
       },
@@ -189,4 +190,32 @@ async function listDoctors(req, res, next) {
   }
 }
 
-module.exports = { createDoctor, markDoctorLeave, listDoctors };
+// Approves a self-registered doctor account, letting them log in and
+// making them visible in patient search.
+async function approveDoctor(req, res, next) {
+  try {
+    const { doctorId } = req.params;
+
+    const doctor = await prisma.user.findFirst({
+      where: { id: doctorId, role: 'DOCTOR' },
+      include: { doctorProfile: true },
+    });
+    if (!doctor || !doctor.doctorProfile) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+    if (doctor.doctorProfile.approved) {
+      return res.status(400).json({ error: 'Doctor is already approved' });
+    }
+
+    const updatedProfile = await prisma.doctorProfile.update({
+      where: { id: doctor.doctorProfile.id },
+      data: { approved: true },
+    });
+
+    res.json({ doctor: sanitizeUser({ ...doctor, doctorProfile: updatedProfile }) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { createDoctor, markDoctorLeave, listDoctors, approveDoctor };
