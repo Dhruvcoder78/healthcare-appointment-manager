@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
 const { signToken } = require('../utils/jwt');
+const { validateScheduleFields } = require('../utils/scheduling');
 
 const SALT_ROUNDS = 10;
 
@@ -19,7 +20,18 @@ const SELF_REGISTERABLE_ROLES = ['PATIENT', 'DOCTOR'];
 // an admin approves them (see adminController.approveDoctor).
 async function register(req, res, next) {
   try {
-    const { email, password, name, phone, role, specialization } = req.body;
+    const {
+      email,
+      password,
+      name,
+      phone,
+      role,
+      specialization,
+      workingHoursStart,
+      workingHoursEnd,
+      workingDays,
+      slotDurationMinutes,
+    } = req.body;
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'email, password, and name are required' });
@@ -34,6 +46,12 @@ async function register(req, res, next) {
     }
     if (requestedRole === 'DOCTOR' && !specialization) {
       return res.status(400).json({ error: 'specialization is required when registering as a doctor' });
+    }
+    if (requestedRole === 'DOCTOR') {
+      const scheduleError = validateScheduleFields({ workingHoursStart, workingHoursEnd, workingDays, slotDurationMinutes });
+      if (scheduleError) {
+        return res.status(400).json({ error: scheduleError });
+      }
     }
 
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -51,7 +69,16 @@ async function register(req, res, next) {
         phone,
         role: requestedRole,
         ...(requestedRole === 'DOCTOR' && {
-          doctorProfile: { create: { specialization, status: 'PENDING' } },
+          doctorProfile: {
+            create: {
+              specialization,
+              status: 'PENDING',
+              ...(workingHoursStart && { workingHoursStart }),
+              ...(workingHoursEnd && { workingHoursEnd }),
+              ...(workingDays && { workingDays }),
+              ...(slotDurationMinutes && { slotDurationMinutes }),
+            },
+          },
         }),
       },
       include: { doctorProfile: true },
@@ -107,7 +134,7 @@ async function login(req, res, next) {
 
 async function me(req, res, next) {
   try {
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const user = await prisma.user.findUnique({ where: { id: req.user.id }, include: { doctorProfile: true } });
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }

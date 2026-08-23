@@ -46,8 +46,17 @@ export function AuthProvider({ children }) {
     setUser(null);
   }, []);
 
+  // Merges a partial update (e.g. a freshly-saved doctorProfile) into the
+  // cached session user, so other parts of the app relying on useAuth().user
+  // see it without needing a full /me refetch.
+  const updateUser = useCallback((partial) => {
+    setUser((current) => (current ? { ...current, ...partial } : current));
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser }}>
+      {children}
+    </AuthContext.Provider>
   );
 }
 

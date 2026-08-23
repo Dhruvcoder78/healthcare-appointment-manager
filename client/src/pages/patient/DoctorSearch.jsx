@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { searchDoctors } from '../../api/doctors';
 import { bookAppointment } from '../../api/appointments';
 import { getErrorMessage } from '../../api/client';
-import { Alert, Button, Card, Input, Textarea } from '../../components/ui';
+import { Alert, Button, Card, Input, Select, Textarea } from '../../components/ui';
 import { DAY_LABELS } from '../../utils/format';
+import { generateSlotsForDate } from '../../utils/slots';
 
 function BookingForm({ doctor, onBooked }) {
   const [date, setDate] = useState('');
@@ -11,6 +12,17 @@ function BookingForm({ doctor, onBooked }) {
   const [symptoms, setSymptoms] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Slots are generated purely from the doctor's current schedule
+  // (workingDays/workingHours/slotDurationMinutes), so the picker always
+  // reflects their latest settings. The server remains the source of truth
+  // for conflicts (already-booked slots, leave) at submit time.
+  const availableSlots = useMemo(() => generateSlotsForDate(date, doctor.doctorProfile), [date, doctor]);
+
+  function handleDateChange(e) {
+    setDate(e.target.value);
+    setTime('');
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -37,9 +49,27 @@ function BookingForm({ doctor, onBooked }) {
   return (
     <form onSubmit={handleSubmit} className="mt-3 space-y-3 border-t border-slate-200 pt-3">
       <div className="grid grid-cols-2 gap-3">
-        <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        <Input label="Time (UTC)" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+        <Input label="Date" type="date" value={date} onChange={handleDateChange} required />
+        <Select
+          label="Time (UTC)"
+          value={time}
+          onChange={(e) => setTime(e.target.value)}
+          disabled={!date || availableSlots.length === 0}
+          required
+        >
+          <option value="">{date ? 'Select a time' : 'Choose a date first'}</option>
+          {availableSlots.map((slot) => (
+            <option key={slot} value={slot}>
+              {slot}
+            </option>
+          ))}
+        </Select>
       </div>
+      {date && availableSlots.length === 0 && (
+        <p className="text-xs text-amber-600">
+          Dr. {doctor.name} doesn&apos;t have any working hours on this day — choose another date.
+        </p>
+      )}
       <Textarea
         label="Describe your symptoms"
         rows={3}

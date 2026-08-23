@@ -5,6 +5,7 @@ import { getErrorMessage } from '../../api/client';
 import { listMyAppointments } from '../../api/appointments';
 import DoctorQueue from './DoctorQueue';
 import RequestLeaveForm from './RequestLeaveForm';
+import ScheduleForm from './ScheduleForm';
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
@@ -60,6 +61,7 @@ export default function DoctorDashboard() {
           <DoctorQueue appointments={appointments} onChanged={fetchQueue} />
         )}
 
+        <ScheduleForm />
         <RequestLeaveForm />
       </div>
     </Layout>

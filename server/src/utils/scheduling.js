@@ -41,4 +41,47 @@ function parseDateBoundary(value, isEnd) {
   return date;
 }
 
-module.exports = { isWithinWorkingHours, isAlignedToSlotGrid, parseDateBoundary };
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+// Validates the subset of schedule fields present in `input` (all optional —
+// only what's provided is checked), so it works both for a full registration
+// payload and a partial PUT .../schedule update. Returns an error message
+// string, or null if everything present is valid. Cross-field checks (start
+// before end) only run when both fields are present together.
+function validateScheduleFields({ workingHoursStart, workingHoursEnd, workingDays, slotDurationMinutes }) {
+  if (workingHoursStart !== undefined && !HHMM_RE.test(workingHoursStart)) {
+    return 'workingHoursStart must be in HH:MM format';
+  }
+  if (workingHoursEnd !== undefined && !HHMM_RE.test(workingHoursEnd)) {
+    return 'workingHoursEnd must be in HH:MM format';
+  }
+  if (
+    workingHoursStart !== undefined &&
+    workingHoursEnd !== undefined &&
+    toMinutes(workingHoursEnd) <= toMinutes(workingHoursStart)
+  ) {
+    return 'workingHoursEnd must be after workingHoursStart';
+  }
+  if (
+    workingDays !== undefined &&
+    (!Array.isArray(workingDays) ||
+      workingDays.length === 0 ||
+      !workingDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6))
+  ) {
+    return 'workingDays must be a non-empty array of integers 0-6 (0=Sunday)';
+  }
+  if (
+    slotDurationMinutes !== undefined &&
+    (!Number.isInteger(slotDurationMinutes) || slotDurationMinutes <= 0)
+  ) {
+    return 'slotDurationMinutes must be a positive integer';
+  }
+  return null;
+}
+
+module.exports = {
+  isWithinWorkingHours,
+  isAlignedToSlotGrid,
+  parseDateBoundary,
+  validateScheduleFields,
+};
