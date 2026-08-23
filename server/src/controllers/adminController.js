@@ -176,4 +176,17 @@ async function markDoctorLeave(req, res, next) {
   }
 }
 
-module.exports = { createDoctor, markDoctorLeave };
+async function listDoctors(req, res, next) {
+  try {
+    const doctors = await prisma.user.findMany({
+      where: { role: 'DOCTOR' },
+      include: { doctorProfile: { include: { leaves: true } } },
+      orderBy: { name: 'asc' },
+    });
+    res.json({ doctors: doctors.map(sanitizeUser) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { createDoctor, markDoctorLeave, listDoctors };

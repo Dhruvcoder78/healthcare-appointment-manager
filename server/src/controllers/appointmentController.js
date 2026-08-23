@@ -361,4 +361,76 @@ async function rescheduleAppointment(req, res, next) {
   }
 }
 
-module.exports = { bookAppointment, preVisitSummary, postVisitSummary, cancelAppointment, rescheduleAppointment };
+const APPOINTMENT_LIST_INCLUDE = {
+  patient: { select: { id: true, name: true, email: true, phone: true } },
+  doctor: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      doctorProfile: { select: { specialization: true } },
+    },
+  },
+};
+
+// Lists the authenticated user's own appointments: a patient sees their
+// bookings, a doctor sees their schedule. `date` (YYYY-MM-DD) narrows a
+// doctor's results to a single day for the daily queue view.
+async function listMyAppointments(req, res, next) {
+  try {
+    const { date } = req.query;
+    const where = req.user.role === 'DOCTOR' ? { doctorId: req.user.id } : { patientId: req.user.id };
+
+    if (date) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'date must be in YYYY-MM-DD format' });
+      }
+      const start = new Date(`${date}T00:00:00.000Z`);
+      const end = new Date(`${date}T23:59:59.999Z`);
+      where.scheduledAt = { gte: start, lte: end };
+    }
+
+    const appointments = await prisma.appointment.findMany({
+      where,
+      include: APPOINTMENT_LIST_INCLUDE,
+      orderBy: { scheduledAt: 'asc' },
+    });
+
+    res.json({ appointments });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function getAppointmentById(req, res, next) {
+  try {
+    const { id } = req.params;
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: APPOINTMENT_LIST_INCLUDE,
+    });
+    if (!appointment) {
+      return res.status(404).json({ error: 'Appointment not found' });
+    }
+
+    const isOwner = req.user.id === appointment.patientId || req.user.id === appointment.doctorId;
+    if (!isOwner && req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    res.json({ appointment });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  bookAppointment,
+  preVisitSummary,
+  postVisitSummary,
+  cancelAppointment,
+  rescheduleAppointment,
+  listMyAppointments,
+  getAppointmentById,
+};
