@@ -51,7 +51,7 @@ async function register(req, res, next) {
         phone,
         role: requestedRole,
         ...(requestedRole === 'DOCTOR' && {
-          doctorProfile: { create: { specialization, approved: false } },
+          doctorProfile: { create: { specialization, status: 'PENDING' } },
         }),
       },
       include: { doctorProfile: true },
@@ -90,8 +90,12 @@ async function login(req, res, next) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    if (user.role === 'DOCTOR' && !user.doctorProfile?.approved) {
-      return res.status(403).json({ error: 'Your doctor account is pending admin approval.' });
+    if (user.role === 'DOCTOR' && user.doctorProfile?.status !== 'APPROVED') {
+      const reason =
+        user.doctorProfile?.status === 'REJECTED'
+          ? 'Your doctor account registration was not approved.'
+          : 'Your doctor account is pending admin approval.';
+      return res.status(403).json({ error: reason });
     }
 
     const token = signToken(user);

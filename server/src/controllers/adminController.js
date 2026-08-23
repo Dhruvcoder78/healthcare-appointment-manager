@@ -1,106 +1,54 @@
-const bcrypt = require('bcryptjs');
 const prisma = require('../config/prisma');
-const { SALT_ROUNDS, sanitizeUser } = require('./authController');
+const { sanitizeUser } = require('./authController');
 const { sendCancellationNotice } = require('../services/notificationService');
 const { deleteEventsForAppointment } = require('../services/googleCalendarService');
-
-const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
-
-// Creates a DOCTOR user account together with its DoctorProfile in one
-// transaction, so a doctor never exists without profile data (working
-// hours, slot duration) needed for booking.
-async function createDoctor(req, res, next) {
-  try {
-    const {
-      email,
-      password,
-      name,
-      phone,
-      specialization,
-      bio,
-      workingHoursStart,
-      workingHoursEnd,
-      workingDays,
-      slotDurationMinutes,
-    } = req.body;
-
-    if (!email || !password || !name || !specialization) {
-      return res
-        .status(400)
-        .json({ error: 'email, password, name, and specialization are required' });
-    }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters' });
-    }
-
-    if (workingHoursStart && !HHMM_RE.test(workingHoursStart)) {
-      return res.status(400).json({ error: 'workingHoursStart must be in HH:MM format' });
-    }
-    if (workingHoursEnd && !HHMM_RE.test(workingHoursEnd)) {
-      return res.status(400).json({ error: 'workingHoursEnd must be in HH:MM format' });
-    }
-    if (
-      workingDays !== undefined &&
-      (!Array.isArray(workingDays) || !workingDays.every((d) => Number.isInteger(d) && d >= 0 && d <= 6))
-    ) {
-      return res.status(400).json({ error: 'workingDays must be an array of integers 0-6' });
-    }
-    if (slotDurationMinutes !== undefined && (!Number.isInteger(slotDurationMinutes) || slotDurationMinutes <= 0)) {
-      return res.status(400).json({ error: 'slotDurationMinutes must be a positive integer' });
-    }
-
-    const existing = await prisma.user.findUnique({ where: { email } });
-    if (existing) {
-      return res.status(409).json({ error: 'An account with this email already exists' });
-    }
-
-    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-
-    const doctor = await prisma.user.create({
-      data: {
-        email,
-        password: hashed,
-        name,
-        phone,
-        role: 'DOCTOR',
-        doctorProfile: {
-          create: {
-            specialization,
-            bio,
-            ...(workingHoursStart && { workingHoursStart }),
-            ...(workingHoursEnd && { workingHoursEnd }),
-            ...(workingDays && { workingDays }),
-            ...(slotDurationMinutes && { slotDurationMinutes }),
-            approved: true, // admin is creating this account directly, so it's pre-vetted
-          },
-        },
-      },
-      include: { doctorProfile: true },
-    });
-
-    res.status(201).json({ user: sanitizeUser(doctor) });
-  } catch (err) {
-    next(err);
-  }
-}
+const { parseDateBoundary } = require('../utils/scheduling');
 
 const ACTIVE_APPOINTMENT_STATUSES = ['PENDING', 'CONFIRMED'];
 
-// A bare "YYYY-MM-DD" date has no time component; when it marks the end of
-// a leave range we want it to cover the whole day, so push it to 23:59:59.999.
-function parseDateBoundary(value, isEnd) {
-  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  if (isDateOnly && isEnd) {
-    date.setUTCHours(23, 59, 59, 999);
-  }
-  return date;
+// Shared by admin-logged leave (already APPROVED) and doctor-requested leave
+// once an admin approves it: cancels every conflicting appointment, cleans
+// up calendar events, and emails both parties. Best-effort — neither
+// calendar cleanup nor notification failure should fail the caller.
+async function cancelConflictingAppointments(doctorUser, doctorProfileId, start, end, reason) {
+  const affectedAppointments = await prisma.$transaction(async (tx) => {
+    const appointmentsToCancel = await tx.appointment.findMany({
+      where: {
+        doctorId: doctorUser.id,
+        scheduledAt: { gte: start, lte: end },
+        status: { in: ACTIVE_APPOINTMENT_STATUSES },
+      },
+      include: { patient: true },
+    });
+
+    if (appointmentsToCancel.length > 0) {
+      await tx.appointment.updateMany({
+        where: { id: { in: appointmentsToCancel.map((a) => a.id) } },
+        data: { status: 'CANCELLED' },
+      });
+    }
+
+    return appointmentsToCancel;
+  });
+
+  await Promise.all(
+    affectedAppointments.map(async (appt) => {
+      await deleteEventsForAppointment(appt, appt.patient, doctorUser);
+      await sendCancellationNotice(appt, appt.patient, doctorUser, reason || 'Doctor is on leave');
+    })
+  );
+
+  return affectedAppointments.map((appt) => ({
+    appointmentId: appt.id,
+    scheduledAt: appt.scheduledAt,
+    patient: sanitizeUser(appt.patient),
+  }));
 }
 
-// Marks a doctor on leave for a date range and cancels every existing
-// PENDING/CONFIRMED appointment that falls within it, returning the list of
-// affected patients (with their appointment details) so they can be notified.
+// Logs leave directly on a doctor's behalf, effective immediately (created
+// as APPROVED — the admin is the approver). Cancels every existing
+// PENDING/CONFIRMED appointment in range and returns the affected patients
+// so they can be notified.
 async function markDoctorLeave(req, res, next) {
   try {
     const { doctorId } = req.params;
@@ -127,49 +75,17 @@ async function markDoctorLeave(req, res, next) {
       return res.status(404).json({ error: 'Doctor not found' });
     }
 
-    const { leave, affectedAppointments } = await prisma.$transaction(async (tx) => {
-      const createdLeave = await tx.doctorLeave.create({
-        data: {
-          doctorId: doctor.doctorProfile.id,
-          startDate: start,
-          endDate: end,
-          reason,
-        },
-      });
-
-      const appointmentsToCancel = await tx.appointment.findMany({
-        where: {
-          doctorId: doctor.id,
-          scheduledAt: { gte: start, lte: end },
-          status: { in: ACTIVE_APPOINTMENT_STATUSES },
-        },
-        include: { patient: true },
-      });
-
-      if (appointmentsToCancel.length > 0) {
-        await tx.appointment.updateMany({
-          where: { id: { in: appointmentsToCancel.map((a) => a.id) } },
-          data: { status: 'CANCELLED' },
-        });
-      }
-
-      return { leave: createdLeave, affectedAppointments: appointmentsToCancel };
+    const leave = await prisma.doctorLeave.create({
+      data: {
+        doctorId: doctor.doctorProfile.id,
+        startDate: start,
+        endDate: end,
+        reason,
+        status: 'APPROVED',
+      },
     });
 
-    // Best-effort: neither calendar cleanup nor emailing affected patients
-    // should fail the leave-creation request itself.
-    await Promise.all(
-      affectedAppointments.map(async (appt) => {
-        await deleteEventsForAppointment(appt, appt.patient, doctor);
-        await sendCancellationNotice(appt, appt.patient, doctor, reason || 'Doctor is on leave');
-      })
-    );
-
-    const affectedPatients = affectedAppointments.map((appt) => ({
-      appointmentId: appt.id,
-      scheduledAt: appt.scheduledAt,
-      patient: sanitizeUser(appt.patient),
-    }));
+    const affectedPatients = await cancelConflictingAppointments(doctor, doctor.doctorProfile.id, start, end, reason);
 
     res.status(201).json({ leave, affectedPatients });
   } catch (err) {
@@ -177,12 +93,27 @@ async function markDoctorLeave(req, res, next) {
   }
 }
 
+// Read-only doctor directory: only APPROVED doctors, with their leave
+// history.
 async function listDoctors(req, res, next) {
   try {
     const doctors = await prisma.user.findMany({
-      where: { role: 'DOCTOR' },
+      where: { role: 'DOCTOR', doctorProfile: { status: 'APPROVED' } },
       include: { doctorProfile: { include: { leaves: true } } },
       orderBy: { name: 'asc' },
+    });
+    res.json({ doctors: doctors.map(sanitizeUser) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listPendingDoctors(req, res, next) {
+  try {
+    const doctors = await prisma.user.findMany({
+      where: { role: 'DOCTOR', doctorProfile: { status: 'PENDING' } },
+      include: { doctorProfile: true },
+      orderBy: { createdAt: 'asc' },
     });
     res.json({ doctors: doctors.map(sanitizeUser) });
   } catch (err) {
@@ -203,13 +134,13 @@ async function approveDoctor(req, res, next) {
     if (!doctor || !doctor.doctorProfile) {
       return res.status(404).json({ error: 'Doctor not found' });
     }
-    if (doctor.doctorProfile.approved) {
-      return res.status(400).json({ error: 'Doctor is already approved' });
+    if (doctor.doctorProfile.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Doctor is not pending approval' });
     }
 
     const updatedProfile = await prisma.doctorProfile.update({
       where: { id: doctor.doctorProfile.id },
-      data: { approved: true },
+      data: { status: 'APPROVED' },
     });
 
     res.json({ doctor: sanitizeUser({ ...doctor, doctorProfile: updatedProfile }) });
@@ -218,4 +149,118 @@ async function approveDoctor(req, res, next) {
   }
 }
 
-module.exports = { createDoctor, markDoctorLeave, listDoctors, approveDoctor };
+// Rejects a self-registered doctor account. They remain unable to log in
+// permanently (no retry path in this endpoint set).
+async function rejectDoctor(req, res, next) {
+  try {
+    const { doctorId } = req.params;
+
+    const doctor = await prisma.user.findFirst({
+      where: { id: doctorId, role: 'DOCTOR' },
+      include: { doctorProfile: true },
+    });
+    if (!doctor || !doctor.doctorProfile) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+    if (doctor.doctorProfile.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Doctor is not pending approval' });
+    }
+
+    const updatedProfile = await prisma.doctorProfile.update({
+      where: { id: doctor.doctorProfile.id },
+      data: { status: 'REJECTED' },
+    });
+
+    res.json({ doctor: sanitizeUser({ ...doctor, doctorProfile: updatedProfile }) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function listPendingLeaves(req, res, next) {
+  try {
+    const leaves = await prisma.doctorLeave.findMany({
+      where: { status: 'PENDING' },
+      include: {
+        doctor: {
+          include: { user: { select: { id: true, name: true, email: true } } },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    res.json({ leaves });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Approves a doctor-requested leave: from this point it blocks new bookings,
+// and every conflicting existing appointment is cancelled (same side
+// effects as an admin-logged leave).
+async function approveLeaveRequest(req, res, next) {
+  try {
+    const { leaveId } = req.params;
+
+    const leave = await prisma.doctorLeave.findUnique({
+      where: { id: leaveId },
+      include: { doctor: { include: { user: true } } },
+    });
+    if (!leave) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+    if (leave.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Leave request is not pending' });
+    }
+
+    const updatedLeave = await prisma.doctorLeave.update({
+      where: { id: leaveId },
+      data: { status: 'APPROVED' },
+    });
+
+    const affectedPatients = await cancelConflictingAppointments(
+      leave.doctor.user,
+      leave.doctorId,
+      leave.startDate,
+      leave.endDate,
+      leave.reason
+    );
+
+    res.json({ leave: updatedLeave, affectedPatients });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function rejectLeaveRequest(req, res, next) {
+  try {
+    const { leaveId } = req.params;
+
+    const leave = await prisma.doctorLeave.findUnique({ where: { id: leaveId } });
+    if (!leave) {
+      return res.status(404).json({ error: 'Leave request not found' });
+    }
+    if (leave.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Leave request is not pending' });
+    }
+
+    const updatedLeave = await prisma.doctorLeave.update({
+      where: { id: leaveId },
+      data: { status: 'REJECTED' },
+    });
+
+    res.json({ leave: updatedLeave });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = {
+  markDoctorLeave,
+  listDoctors,
+  listPendingDoctors,
+  approveDoctor,
+  rejectDoctor,
+  listPendingLeaves,
+  approveLeaveRequest,
+  rejectLeaveRequest,
+};

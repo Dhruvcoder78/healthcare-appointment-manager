@@ -58,6 +58,7 @@ async function bookAppointment(req, res, next) {
     const onLeave = await prisma.doctorLeave.findFirst({
       where: {
         doctorId: doctor.doctorProfile.id,
+        status: 'APPROVED',
         startDate: { lte: parsedDate },
         endDate: { gte: parsedDate },
       },
@@ -310,7 +311,7 @@ async function rescheduleAppointment(req, res, next) {
     }
 
     const onLeave = await prisma.doctorLeave.findFirst({
-      where: { doctorId: doctorProfile.id, startDate: { lte: newDate }, endDate: { gte: newDate } },
+      where: { doctorId: doctorProfile.id, status: 'APPROVED', startDate: { lte: newDate }, endDate: { gte: newDate } },
     });
     if (onLeave) {
       return res.status(409).json({ error: 'Doctor is on leave at the requested time' });

@@ -4,6 +4,7 @@ import { Alert, Card, Input, Spinner } from '../../components/ui';
 import { getErrorMessage } from '../../api/client';
 import { listMyAppointments } from '../../api/appointments';
 import DoctorQueue from './DoctorQueue';
+import RequestLeaveForm from './RequestLeaveForm';
 
 function todayISODate() {
   return new Date().toISOString().slice(0, 10);
@@ -58,6 +59,8 @@ export default function DoctorDashboard() {
         ) : (
           <DoctorQueue appointments={appointments} onChanged={fetchQueue} />
         )}
+
+        <RequestLeaveForm />
       </div>
     </Layout>
   );

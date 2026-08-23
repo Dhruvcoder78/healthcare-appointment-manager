@@ -29,4 +29,16 @@ function isAlignedToSlotGrid(scheduledAt, doctorProfile) {
   return (slotStart - gridStart) % doctorProfile.slotDurationMinutes === 0;
 }
 
-module.exports = { isWithinWorkingHours, isAlignedToSlotGrid };
+// A bare "YYYY-MM-DD" date has no time component; when it marks the end of
+// a date range we want it to cover the whole day, so push it to 23:59:59.999.
+function parseDateBoundary(value, isEnd) {
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  if (isDateOnly && isEnd) {
+    date.setUTCHours(23, 59, 59, 999);
+  }
+  return date;
+}
+
+module.exports = { isWithinWorkingHours, isAlignedToSlotGrid, parseDateBoundary };

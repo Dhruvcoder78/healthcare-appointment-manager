@@ -10,7 +10,7 @@ async function searchDoctors(req, res, next) {
       where: {
         role: 'DOCTOR',
         doctorProfile: {
-          approved: true,
+          status: 'APPROVED',
           ...(specialization && { specialization: { contains: specialization, mode: 'insensitive' } }),
         },
       },

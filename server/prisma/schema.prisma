@@ -35,6 +35,12 @@ enum ReminderStatus {
   FAILED
 }
 
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -73,11 +79,10 @@ model DoctorProfile {
 
   slotDurationMinutes Int @default(30)
 
-  // False for doctors who self-registered and haven't been vetted by an
-  // admin yet: they can't log in and don't appear in patient search until
-  // approved. Admin-created doctors (POST /admin/doctors) are approved
-  // immediately since an admin is the one creating them.
-  approved Boolean @default(false)
+  // PENDING for self-registered doctors who haven't been vetted by an admin
+  // yet: they can't log in and don't appear in patient search until an
+  // admin approves (or rejects) them from the Notifications & Approvals tab.
+  status ApprovalStatus @default(PENDING)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -94,9 +99,17 @@ model DoctorLeave {
   startDate DateTime
   endDate   DateTime
   reason    String?
-  createdAt DateTime      @default(now())
+
+  // PENDING when a doctor self-requests leave (POST /leaves) — it only
+  // blocks new bookings and cancels conflicting appointments once an admin
+  // approves it. Admin-logged leave (POST /admin/doctors/:id/leaves) is
+  // created as APPROVED directly, since the admin is the approver.
+  status ApprovalStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
 
   @@index([doctorId])
+  @@index([status])
   @@map("doctor_leaves")
 }
 
