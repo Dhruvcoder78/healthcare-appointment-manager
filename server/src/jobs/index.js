@@ -5,7 +5,7 @@ const { sendUpcomingReminders } = require('./appointmentReminders');
 function startJobs() {
   const reminderSchedule = process.env.MEDICATION_REMINDER_CRON || '*/15 * * * *';
   const retrySchedule = process.env.EMAIL_RETRY_CRON || '*/10 * * * *';
-  const appointmentReminderSchedule = process.env.APPOINTMENT_REMINDER_CRON || '*/5 * * * *';
+  const appointmentReminderSchedule = process.env.APPOINTMENT_REMINDER_CRON || '0 * * * *';
 
   cron.schedule(reminderSchedule, async () => {
     try {

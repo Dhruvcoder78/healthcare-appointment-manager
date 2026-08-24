@@ -107,16 +107,13 @@ failed against a broken SMTP host, was retried and failed again
 (`retryCount: 2`), then succeeded once SMTP was restored, resetting
 `retryCount` to `0` and correctly advancing `nextSendAt`.
 
-The upcoming-appointment reminder job (`appointmentReminders.js`) is
-deliberately **stateless and repeating** rather than a one-time "day
-before" notice: every run (`APPOINTMENT_REMINDER_CRON`, default every 5
-minutes) simply re-queries every `PENDING`/`CONFIRMED` appointment with
-`scheduledAt` still in the future and re-emails both parties — no "already
-reminded" flag gates it. This was a deliberate product choice (repeat
-reminders right up to the appointment), and it keeps the job trivially
-correct: there's no state machine to get wrong, and it naturally stops
-emailing the moment `scheduledAt` passes or the appointment is
-cancelled/completed, since either removes it from the query.
+The upcoming-appointment reminder job (`appointmentReminders.js`, default
+hourly via `APPOINTMENT_REMINDER_CRON`) sends a one-time "1 day before"
+notice: each run queries `PENDING`/`CONFIRMED` appointments with
+`scheduledAt` in the next 24 hours and `reminderSentAt: null`, emails both
+parties, then stamps `reminderSentAt` — the same gate the medication-reminder
+retry logic above reads, so a reminder is never sent twice even though the
+job re-scans the same window on every run.
 
 ## 5. Timezone handling (IST)
 

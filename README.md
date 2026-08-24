@@ -118,7 +118,7 @@ accounts directly.
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | No | Needed only for Google Calendar sync — see §6 for setup |
 | `MEDICATION_REMINDER_CRON` | No (default `*/15 * * * *`) | How often the medication-reminder job checks for due reminders |
 | `EMAIL_RETRY_CRON` | No (default `*/10 * * * *`) | How often failed reminder emails are retried |
-| `APPOINTMENT_REMINDER_CRON` | No (default `*/5 * * * *`) | How often the upcoming-appointment reminder job runs. By design this is a **repeating** reminder, not a one-time notice: every `PENDING`/`CONFIRMED` appointment that hasn't happened yet gets re-emailed to both parties on every run, starting right after booking and continuing until the appointment's scheduled time passes |
+| `APPOINTMENT_REMINDER_CRON` | No (default `0 * * * *`) | How often the upcoming-appointment reminder job checks for appointments starting within the next 24 hours. Sends a one-time reminder email to both parties, gated by `reminderSentAt` so it's never sent twice |
 
 ### `client/.env.example`
 
@@ -373,7 +373,7 @@ Relations: many `DoctorLeave`.
 | followUpInDays | int? | extracted by the post-visit LLM call |
 | followUpDate | datetime? | `scheduledAt + followUpInDays` |
 | patientCalendarEventId / doctorCalendarEventId | string? | Google Calendar event ids, one per connected party |
-| reminderSentAt | datetime? | last time the repeating appointment reminder was sent (informational — doesn't gate resending; see `APPOINTMENT_REMINDER_CRON` in §2) |
+| reminderSentAt | datetime? | set once the 1-day-before appointment reminder has been sent, so it's never sent twice (see `APPOINTMENT_REMINDER_CRON` in §2) |
 | createdAt / updatedAt | datetime | |
 
 Indexes: `[doctorId, scheduledAt]`, `[patientId]`.
