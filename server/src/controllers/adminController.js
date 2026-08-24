@@ -2,7 +2,7 @@ const prisma = require('../config/prisma');
 const { sanitizeUser } = require('./authController');
 const { sendCancellationNotice } = require('../services/notificationService');
 const { deleteEventsForAppointment } = require('../services/googleCalendarService');
-const { parseDateBoundary } = require('../utils/scheduling');
+const { parseDateBoundary, validateScheduleFields } = require('../utils/scheduling');
 
 const ACTIVE_APPOINTMENT_STATUSES = ['PENDING', 'CONFIRMED'];
 
@@ -177,6 +177,53 @@ async function rejectDoctor(req, res, next) {
   }
 }
 
+// Lets an admin edit an already-approved doctor's working hours, working
+// days, and slot duration. Doctors can no longer self-service this — only an
+// admin, and only once the doctor has been approved (a still-pending doctor
+// has no confirmed identity/credentials to schedule against). All fields
+// optional — only what's provided is changed.
+async function updateDoctorSchedule(req, res, next) {
+  try {
+    const { doctorId } = req.params;
+    const { workingHoursStart, workingHoursEnd, workingDays, slotDurationMinutes } = req.body;
+
+    const doctor = await prisma.user.findFirst({
+      where: { id: doctorId, role: 'DOCTOR' },
+      include: { doctorProfile: true },
+    });
+    if (!doctor || !doctor.doctorProfile) {
+      return res.status(404).json({ error: 'Doctor not found' });
+    }
+    if (doctor.doctorProfile.status !== 'APPROVED') {
+      return res.status(400).json({ error: 'Doctor must be approved before their schedule can be edited' });
+    }
+
+    const scheduleError = validateScheduleFields({
+      workingHoursStart: workingHoursStart ?? doctor.doctorProfile.workingHoursStart,
+      workingHoursEnd: workingHoursEnd ?? doctor.doctorProfile.workingHoursEnd,
+      workingDays,
+      slotDurationMinutes,
+    });
+    if (scheduleError) {
+      return res.status(400).json({ error: scheduleError });
+    }
+
+    const updatedProfile = await prisma.doctorProfile.update({
+      where: { id: doctor.doctorProfile.id },
+      data: {
+        ...(workingHoursStart !== undefined && { workingHoursStart }),
+        ...(workingHoursEnd !== undefined && { workingHoursEnd }),
+        ...(workingDays !== undefined && { workingDays }),
+        ...(slotDurationMinutes !== undefined && { slotDurationMinutes }),
+      },
+    });
+
+    res.json({ doctorProfile: updatedProfile });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function listPendingLeaves(req, res, next) {
   try {
     const leaves = await prisma.doctorLeave.findMany({
@@ -260,6 +307,7 @@ module.exports = {
   listPendingDoctors,
   approveDoctor,
   rejectDoctor,
+  updateDoctorSchedule,
   listPendingLeaves,
   approveLeaveRequest,
   rejectLeaveRequest,

@@ -5,6 +5,7 @@ const {
   listPendingDoctors,
   approveDoctor,
   rejectDoctor,
+  updateDoctorSchedule,
   listPendingLeaves,
   approveLeaveRequest,
   rejectLeaveRequest,
@@ -17,6 +18,7 @@ router.get('/doctors', authenticate, isAdmin, listDoctors);
 router.get('/doctors/pending', authenticate, isAdmin, listPendingDoctors);
 router.post('/doctors/:doctorId/approve', authenticate, isAdmin, approveDoctor);
 router.post('/doctors/:doctorId/reject', authenticate, isAdmin, rejectDoctor);
+router.put('/doctors/:doctorId/schedule', authenticate, isAdmin, updateDoctorSchedule);
 router.post('/doctors/:doctorId/leaves', authenticate, isAdmin, markDoctorLeave);
 
 router.get('/leaves/pending', authenticate, isAdmin, listPendingLeaves);

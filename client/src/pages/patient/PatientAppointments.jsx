@@ -19,7 +19,7 @@ function RescheduleForm({ appointment, onDone }) {
     setError('');
     setLoading(true);
     try {
-      const scheduledAt = new Date(`${date}T${time}:00.000Z`).toISOString();
+      const scheduledAt = new Date(`${date}T${time}:00.000+05:30`).toISOString();
       await rescheduleAppointment(appointment.id, scheduledAt);
       onDone();
     } catch (err) {
@@ -32,7 +32,7 @@ function RescheduleForm({ appointment, onDone }) {
   return (
     <form onSubmit={handleSubmit} className="mt-2 flex flex-wrap items-end gap-2">
       <Input label="New date" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-      <Input label="New time (UTC)" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+      <Input label="New time (IST)" type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
       <Button type="submit" loading={loading} className="mb-0.5">
         Confirm
       </Button>

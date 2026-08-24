@@ -35,6 +35,12 @@ export default function AdminDashboard() {
     fetchDoctors();
   }, [fetchDoctors]);
 
+  function handleDoctorUpdated(doctorId, updatedProfile) {
+    setDoctors((prev) =>
+      prev.map((doc) => (doc.id === doctorId ? { ...doc, doctorProfile: updatedProfile } : doc))
+    );
+  }
+
   return (
     <Layout>
       <div className="mb-6 flex gap-1 rounded-md border border-slate-200 bg-white p-1 text-sm">
@@ -59,7 +65,7 @@ export default function AdminDashboard() {
         ) : error ? (
           <Alert>{error}</Alert>
         ) : (
-          <DoctorsList doctors={doctors} />
+          <DoctorsList doctors={doctors} onDoctorUpdated={handleDoctorUpdated} />
         ))}
 
       {activeTab === 'leave' && <MarkLeaveForm doctors={doctors} onLeaveMarked={fetchDoctors} />}

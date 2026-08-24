@@ -4,7 +4,12 @@ const { AppError } = require('../utils/errors');
 const { withSerializableRetry } = require('../utils/withRetry');
 const { isWithinWorkingHours, isAlignedToSlotGrid } = require('../utils/scheduling');
 const { generatePreVisitSummary, generatePostVisitSummary } = require('../services/llmService');
-const { sendBookingConfirmation, sendCancellationNotice, sendRescheduleNotice } = require('../services/notificationService');
+const {
+  sendBookingConfirmation,
+  sendCancellationNotice,
+  sendRescheduleNotice,
+  sendPostVisitSummary,
+} = require('../services/notificationService');
 const { syncEventsForAppointment, deleteEventsForAppointment } = require('../services/googleCalendarService');
 
 const BLOCKING_STATUSES = ['PENDING', 'CONFIRMED', 'COMPLETED'];
@@ -206,7 +211,10 @@ async function postVisitSummary(req, res, next) {
       return res.status(400).json({ error: 'doctorNotes are required' });
     }
 
-    const appointment = await prisma.appointment.findUnique({ where: { id } });
+    const appointment = await prisma.appointment.findUnique({
+      where: { id },
+      include: { patient: true, doctor: true },
+    });
     if (!appointment) {
       return res.status(404).json({ error: 'Appointment not found' });
     }
@@ -232,6 +240,10 @@ async function postVisitSummary(req, res, next) {
         status: 'COMPLETED',
       },
     });
+
+    // Best-effort: emails the patient their prescription + follow-up
+    // schedule. Never fails the request itself.
+    await sendPostVisitSummary(updated, appointment.patient, appointment.doctor, result.data);
 
     res.json({
       appointment: updated,
@@ -424,8 +436,9 @@ async function listMyAppointments(req, res, next) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
         return res.status(400).json({ error: 'date must be in YYYY-MM-DD format' });
       }
-      const start = new Date(`${date}T00:00:00.000Z`);
-      const end = new Date(`${date}T23:59:59.999Z`);
+      // `date` is an IST calendar day (see server/src/utils/scheduling.js).
+      const start = new Date(`${date}T00:00:00.000+05:30`);
+      const end = new Date(`${date}T23:59:59.999+05:30`);
       where.scheduledAt = { gte: start, lte: end };
     }
 

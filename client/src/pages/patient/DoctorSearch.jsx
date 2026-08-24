@@ -33,7 +33,7 @@ function BookingForm({ doctor, onBooked }) {
     }
     setLoading(true);
     try {
-      const scheduledAt = new Date(`${date}T${time}:00.000Z`).toISOString();
+      const scheduledAt = new Date(`${date}T${time}:00.000+05:30`).toISOString();
       await bookAppointment({ doctorId: doctor.id, scheduledAt, symptoms });
       setDate('');
       setTime('');
@@ -51,7 +51,7 @@ function BookingForm({ doctor, onBooked }) {
       <div className="grid grid-cols-2 gap-3">
         <Input label="Date" type="date" value={date} onChange={handleDateChange} required />
         <Select
-          label="Time (UTC)"
+          label="Time (IST)"
           value={time}
           onChange={(e) => setTime(e.target.value)}
           disabled={!date || availableSlots.length === 0}
@@ -88,6 +88,7 @@ function BookingForm({ doctor, onBooked }) {
 
 export default function DoctorSearch({ onBooked }) {
   const [specialization, setSpecialization] = useState('');
+  const [name, setName] = useState('');
   const [doctors, setDoctors] = useState([]);
   const [expanded, setExpanded] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -99,7 +100,7 @@ export default function DoctorSearch({ onBooked }) {
     setError('');
     setLoading(true);
     try {
-      const results = await searchDoctors(specialization);
+      const results = await searchDoctors({ specialization, name });
       setDoctors(results);
       setSearched(true);
     } catch (err) {
@@ -112,10 +113,16 @@ export default function DoctorSearch({ onBooked }) {
   return (
     <Card>
       <h2 className="mb-4 text-base font-semibold text-slate-900">Find a doctor</h2>
-      <form onSubmit={handleSearch} className="mb-4 flex gap-2">
+      <form onSubmit={handleSearch} className="mb-4 flex flex-wrap gap-2">
         <Input
           className="flex-1"
-          placeholder="Search by specialization (e.g. Cardiology)"
+          placeholder="Doctor name (e.g. Dr. Sunil Kumar)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <Input
+          className="flex-1"
+          placeholder="Specialization (e.g. Cardiology)"
           value={specialization}
           onChange={(e) => setSpecialization(e.target.value)}
         />
@@ -138,7 +145,7 @@ export default function DoctorSearch({ onBooked }) {
                 <p className="font-medium text-slate-900">{doc.name}</p>
                 <p className="text-sm text-slate-500">{doc.doctorProfile.specialization}</p>
                 <p className="mt-1 text-xs text-slate-400">
-                  {doc.doctorProfile.workingHoursStart}–{doc.doctorProfile.workingHoursEnd} (UTC) ·{' '}
+                  {doc.doctorProfile.workingHoursStart}–{doc.doctorProfile.workingHoursEnd} (IST) ·{' '}
                   {doc.doctorProfile.workingDays.map((d) => DAY_LABELS[d]).join(', ')} ·{' '}
                   {doc.doctorProfile.slotDurationMinutes} min slots
                 </p>

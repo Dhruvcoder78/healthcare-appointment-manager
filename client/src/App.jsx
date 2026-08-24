@@ -6,6 +6,7 @@ import RegisterPage from './pages/RegisterPage';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import PatientDashboard from './pages/patient/PatientDashboard';
 import DoctorDashboard from './pages/doctor/DoctorDashboard';
+import SettingsPage from './pages/SettingsPage';
 
 const HOME_BY_ROLE = { ADMIN: '/admin', DOCTOR: '/doctor', PATIENT: '/patient' };
 
@@ -44,6 +45,14 @@ function App() {
             element={
               <ProtectedRoute role="DOCTOR">
                 <DoctorDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <SettingsPage />
               </ProtectedRoute>
             }
           />

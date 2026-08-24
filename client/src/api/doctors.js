@@ -1,7 +1,6 @@
 import client from './client';
 
-export const searchDoctors = (specialization) =>
-  client.get('/doctors/search', { params: specialization ? { specialization } : {} }).then((r) => r.data.doctors);
-
-export const updateMySchedule = (payload) =>
-  client.put('/doctors/me/schedule', payload).then((r) => r.data.doctorProfile);
+export const searchDoctors = ({ specialization, name } = {}) =>
+  client
+    .get('/doctors/search', { params: { ...(specialization && { specialization }), ...(name && { name }) } })
+    .then((r) => r.data.doctors);

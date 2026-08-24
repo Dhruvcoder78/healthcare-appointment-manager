@@ -9,6 +9,8 @@ export const approveDoctor = (doctorId) =>
   client.post(`/admin/doctors/${doctorId}/approve`).then((r) => r.data.doctor);
 export const rejectDoctor = (doctorId) =>
   client.post(`/admin/doctors/${doctorId}/reject`).then((r) => r.data.doctor);
+export const updateDoctorSchedule = (doctorId, payload) =>
+  client.put(`/admin/doctors/${doctorId}/schedule`, payload).then((r) => r.data.doctorProfile);
 
 export const listPendingLeaves = () => client.get('/admin/leaves/pending').then((r) => r.data.leaves);
 export const approveLeave = (leaveId) => client.post(`/admin/leaves/${leaveId}/approve`).then((r) => r.data);

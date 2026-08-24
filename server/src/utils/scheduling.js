@@ -1,22 +1,36 @@
 // Working hours ("HH:MM") and workingDays (0=Sun..6=Sat) are interpreted in
-// UTC, matching how scheduledAt (an ISO timestamp) is stored and compared.
+// IST (Asia/Kolkata, UTC+5:30 — no DST), the app's single canonical
+// timezone. scheduledAt is stored as an absolute UTC instant (Prisma
+// DateTime), so it's shifted to IST wall-clock before extracting the day/
+// hour/minute components used for comparison.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+const IST_OFFSET_SUFFIX = '+05:30';
 
 function toMinutes(hhmm) {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 }
 
+// Shifts a UTC instant so that its getUTC* components read as IST wall-clock
+// values — a standard trick for timezone math without a library.
+function istParts(date) {
+  const shifted = new Date(date.getTime() + IST_OFFSET_MS);
+  return {
+    day: shifted.getUTCDay(),
+    minutesOfDay: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+  };
+}
+
 function isWithinWorkingHours(scheduledAt, doctorProfile) {
-  const day = scheduledAt.getUTCDay();
+  const { day, minutesOfDay } = istParts(scheduledAt);
   if (!doctorProfile.workingDays.includes(day)) {
     return false;
   }
 
-  const slotStart = scheduledAt.getUTCHours() * 60 + scheduledAt.getUTCMinutes();
-  const slotEnd = slotStart + doctorProfile.slotDurationMinutes;
+  const slotEnd = minutesOfDay + doctorProfile.slotDurationMinutes;
 
   return (
-    slotStart >= toMinutes(doctorProfile.workingHoursStart) &&
+    minutesOfDay >= toMinutes(doctorProfile.workingHoursStart) &&
     slotEnd <= toMinutes(doctorProfile.workingHoursEnd)
   );
 }
@@ -24,20 +38,20 @@ function isWithinWorkingHours(scheduledAt, doctorProfile) {
 // A booked slot must fall on the doctor's configured cadence, e.g. slots at
 // :00/:20/:40 for a 20-minute duration, anchored to the start of the working day.
 function isAlignedToSlotGrid(scheduledAt, doctorProfile) {
-  const slotStart = scheduledAt.getUTCHours() * 60 + scheduledAt.getUTCMinutes();
+  const { minutesOfDay } = istParts(scheduledAt);
   const gridStart = toMinutes(doctorProfile.workingHoursStart);
-  return (slotStart - gridStart) % doctorProfile.slotDurationMinutes === 0;
+  return (minutesOfDay - gridStart) % doctorProfile.slotDurationMinutes === 0;
 }
 
-// A bare "YYYY-MM-DD" date has no time component; when it marks the end of
-// a date range we want it to cover the whole day, so push it to 23:59:59.999.
+// A bare "YYYY-MM-DD" date has no time component; it's interpreted as an IST
+// calendar day. When it marks the end of a date range we want it to cover
+// the whole day, so push it to 23:59:59.999 IST.
 function parseDateBoundary(value, isEnd) {
   const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
-  const date = new Date(value);
+  const date = isDateOnly
+    ? new Date(`${value}T${isEnd ? '23:59:59.999' : '00:00:00.000'}${IST_OFFSET_SUFFIX}`)
+    : new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  if (isDateOnly && isEnd) {
-    date.setUTCHours(23, 59, 59, 999);
-  }
   return date;
 }
 

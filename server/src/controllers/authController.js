@@ -7,7 +7,9 @@ const SALT_ROUNDS = 10;
 
 function sanitizeUser(user) {
   const { password, googleAccessToken, googleRefreshToken, ...safe } = user;
-  return safe;
+  // Never expose the raw tokens — just whether Google Calendar is connected,
+  // so the frontend can show connect/connected status.
+  return { ...safe, googleCalendarConnected: Boolean(googleRefreshToken) };
 }
 
 const SELF_REGISTERABLE_ROLES = ['PATIENT', 'DOCTOR'];

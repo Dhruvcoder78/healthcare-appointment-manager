@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 const ROLE_LABELS = {
@@ -23,6 +24,11 @@ export default function Layout({ children }) {
               <span className="text-slate-600">
                 {user.name} <span className="text-slate-400">({user.email})</span>
               </span>
+              {(user.role === 'PATIENT' || user.role === 'DOCTOR') && (
+                <Link to="/settings" className="text-slate-600 hover:text-slate-900 hover:underline">
+                  Settings
+                </Link>
+              )}
               <button
                 onClick={logout}
                 className="rounded-md border border-slate-300 px-3 py-1.5 text-slate-700 hover:bg-slate-100"

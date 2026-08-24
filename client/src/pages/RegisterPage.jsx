@@ -143,14 +143,14 @@ export default function RegisterPage() {
 
                   <div className="grid grid-cols-2 gap-4">
                     <Input
-                      label="Working hours start"
+                      label="Working hours start (IST)"
                       type="time"
                       value={form.workingHoursStart}
                       onChange={update('workingHoursStart')}
                       required
                     />
                     <Input
-                      label="Working hours end"
+                      label="Working hours end (IST)"
                       type="time"
                       value={form.workingHoursEnd}
                       onChange={update('workingHoursEnd')}

@@ -7,9 +7,13 @@ notifications, Google Calendar sync, and background reminder jobs.
 - **Backend:** Node.js, Express.js, Prisma ORM, PostgreSQL
 - **Frontend:** React (Vite), Tailwind CSS
 - **Auth:** JWT with Role-Based Access Control (ADMIN, DOCTOR, PATIENT)
-- **AI:** OpenAI API (or any OpenAI-compatible LLM) for clinical summaries
+- **AI:** OpenAI API (or any OpenAI-compatible LLM — e.g. Groq) for clinical summaries
 - **Notifications:** Nodemailer (SMTP) + node-cron background jobs
 - **Calendar:** Google Calendar API (OAuth 2.0)
+- **Timezone:** the whole app treats IST (Asia/Kolkata, UTC+5:30) as its
+  single canonical timezone — doctor working hours, booking/reschedule
+  input, and every displayed timestamp are all IST, regardless of the
+  server's or viewer's own local timezone (see `server/src/utils/scheduling.js`)
 
 See [SYSTEM_DESIGN.md](./SYSTEM_DESIGN.md) for the design rationale behind
 double-booking prevention, leave-conflict handling, and notification failure
@@ -77,8 +81,11 @@ const prisma = require('./src/config/prisma');
 "
 ```
 
-That admin can then create doctor accounts via the Admin Portal (or
-`POST /api/admin/doctors`), and patients self-register from `/register`.
+Patients and doctors both self-register from `/register`. A doctor
+self-registration is created `PENDING` and can't log in until that admin
+approves them from the Admin Portal's "Notifications & Approvals" tab (or
+`POST /api/admin/doctors/:doctorId/approve`) — admins never create doctor
+accounts directly.
 
 ### Useful scripts
 
@@ -105,13 +112,13 @@ That admin can then create doctor accounts via the Admin Portal (or
 | `JWT_SECRET` | **Yes** | Long random string; signs both login tokens and the short-lived Google OAuth `state` token |
 | `JWT_EXPIRES_IN` | No (default `7d`) | Login token lifetime |
 | `OPENAI_API_KEY` | No | Without it, pre/post-visit summary endpoints still work — they return a safe fallback (see §5 and §4) |
-| `OPENAI_BASE_URL` | No | Point this at any OpenAI-compatible endpoint (Azure OpenAI, local proxy, etc.) |
-| `OPENAI_MODEL` | No (default `gpt-4o-mini`) | Any chat-completion model that supports `response_format: json_object` |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Without valid SMTP, emails fail silently (logged, never crash a request) — see §4 |
+| `OPENAI_BASE_URL` | No (default `https://api.openai.com/v1`) | Point this at any OpenAI-compatible endpoint — Azure OpenAI, a local proxy, or a free alternative like Groq (`https://api.groq.com/openai/v1`) |
+| `OPENAI_MODEL` | No (default `gpt-4o-mini`) | Any chat-completion model that supports `response_format: json_object`, available on whichever `OPENAI_BASE_URL` you're pointed at (e.g. `openai/gpt-oss-20b` on Groq) — check your provider's current model list, since model names get deprecated |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Without valid SMTP, emails fail silently (logged, never crash a request) — see §4. For Gmail: `smtp.gmail.com`, port `587`, `SMTP_SECURE=false`, and an [App Password](https://myaccount.google.com/apppasswords) (not your account password) as `SMTP_PASS` |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | No | Needed only for Google Calendar sync — see §6 for setup |
 | `MEDICATION_REMINDER_CRON` | No (default `*/15 * * * *`) | How often the medication-reminder job checks for due reminders |
 | `EMAIL_RETRY_CRON` | No (default `*/10 * * * *`) | How often failed reminder emails are retried |
-| `APPOINTMENT_REMINDER_CRON` | No (default `0 * * * *`) | How often the upcoming-appointment reminder job runs |
+| `APPOINTMENT_REMINDER_CRON` | No (default `*/5 * * * *`) | How often the upcoming-appointment reminder job runs. By design this is a **repeating** reminder, not a one-time notice: every `PENDING`/`CONFIRMED` appointment that hasn't happened yet gets re-emailed to both parties on every run, starting right after booking and continuing until the appointment's scheduled time passes |
 
 ### `client/.env.example`
 
@@ -131,41 +138,57 @@ Base URL: `http://localhost:5000/api`. All endpoints except `POST /auth/register
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| POST | `/register` | Public | Creates a **PATIENT** account. Body: `{ email, password (min 8 chars), name, phone? }` |
-| POST | `/login` | Public | Body: `{ email, password }` → `{ token, user }` |
-| GET | `/me` | Any | Returns the authenticated user |
+| POST | `/register` | Public | Self-registration for **PATIENT** or **DOCTOR** only — `ADMIN` can never self-register (the only admin-creation path is the seed script above). Body: `{ email, password (min 8 chars), name, phone?, role? ("PATIENT" default \| "DOCTOR") }`. If `role: "DOCTOR"`, also requires `specialization`, and accepts optional `workingHoursStart` ("HH:MM", IST), `workingHoursEnd`, `workingDays` (int[] 0-6), `slotDurationMinutes`. A doctor registration is created `PENDING` and returns `{ user, pendingApproval: true }` with **no token** — they can't log in until an admin approves them |
+| POST | `/login` | Public | Body: `{ email, password }` → `{ token, user }`. A `PENDING`/`REJECTED` doctor gets `403` instead of a token |
+| GET | `/me` | Any | Returns the authenticated user, including `googleCalendarConnected: boolean` |
 
 ### Admin — `/api/admin` (role: `ADMIN`)
 
+Admins never create or directly edit an unapproved doctor — the only path onto
+the platform is doctor self-registration + admin approval below.
+
 | Method | Path | Description |
 |---|---|---|
-| GET | `/doctors` | Lists all doctors with their profile and leave records |
-| POST | `/doctors` | Creates a `DOCTOR` user + `DoctorProfile` atomically. Body: `{ email, password, name, phone?, specialization, bio?, workingHoursStart? ("HH:MM"), workingHoursEnd? ("HH:MM"), workingDays? (int[] 0-6), slotDurationMinutes? }` |
-| POST | `/doctors/:doctorId/leaves` | Marks a doctor on leave for a date range. Body: `{ startDate, endDate, reason? }` (dates as `YYYY-MM-DD` or ISO). Cancels all `PENDING`/`CONFIRMED` appointments in range, deletes their calendar events, emails both parties, and returns `{ leave, affectedPatients: [{ appointmentId, scheduledAt, patient }] }` |
+| GET | `/doctors` | Lists all **approved** doctors with their profile and leave history |
+| GET | `/doctors/pending` | Lists doctors awaiting approval (`doctorProfile.status: PENDING`) |
+| POST | `/doctors/:doctorId/approve` | Approves a pending doctor — they can now log in and appear in patient search |
+| POST | `/doctors/:doctorId/reject` | Rejects a pending doctor — permanent, no retry path |
+| PUT | `/doctors/:doctorId/schedule` | Edits an **already-approved** doctor's working hours/days/slot duration (`400` if not yet approved). Body: `{ workingHoursStart? ("HH:MM", IST), workingHoursEnd?, workingDays? (int[] 0-6), slotDurationMinutes? }` — all optional, only what's provided changes. This is the only way to change a doctor's schedule after registration; doctors have no self-service access to it |
+| POST | `/doctors/:doctorId/leaves` | Marks a doctor on leave for a date range, created already `APPROVED` (the admin is the approver). Body: `{ startDate, endDate, reason? }` (dates as `YYYY-MM-DD`, interpreted as IST calendar days, or full ISO). Cancels all `PENDING`/`CONFIRMED` appointments in range, deletes their calendar events, emails both parties, and returns `{ leave, affectedPatients: [{ appointmentId, scheduledAt, patient }] }` |
+| GET | `/leaves/pending` | Lists doctor-submitted leave requests awaiting approval |
+| POST | `/leaves/:leaveId/approve` | Approves a doctor-requested leave — same cancellation/notification side effects as above |
+| POST | `/leaves/:leaveId/reject` | Rejects a doctor-requested leave — no side effects |
 
 ### Doctors — `/api/doctors` (role: `PATIENT`)
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/search?specialization=` | Case-insensitive partial match on specialization; omit the query to list all doctors |
+| GET | `/search?specialization=&name=` | Case-insensitive partial match on specialization and/or doctor name (combinable with AND); omit both to list all approved doctors |
+
+### Leaves — `/api/leaves` (role: `DOCTOR`)
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/` | Requests leave for the authenticated doctor, created `PENDING`. Body: `{ startDate, endDate, reason? }`. Does **not** block bookings or cancel anything until an admin approves it |
+| GET | `/` | Lists the authenticated doctor's own leave requests (any status) |
 
 ### Appointments — `/api/appointments`
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/` | Any | Lists the caller's own appointments (patient → their bookings, doctor → their schedule). `?date=YYYY-MM-DD` narrows a doctor's results to one day (the daily queue view) |
+| GET | `/` | Any | Lists the caller's own appointments (patient → their bookings, doctor → their schedule only — never another doctor's). `?date=YYYY-MM-DD` narrows a doctor's results to one IST calendar day (the daily queue view) |
 | GET | `/:id` | Owner (patient/doctor) or admin | Fetch a single appointment |
-| POST | `/` | `PATIENT` | Books an appointment. Body: `{ doctorId, scheduledAt (ISO, future), symptoms? }`. Validates working hours/day and slot-duration alignment, rejects if the doctor is on leave, and is race-safe against double-booking (see SYSTEM_DESIGN.md). Triggers a booking-confirmation email and calendar sync for both parties |
+| POST | `/` | `PATIENT` | Books an appointment. Body: `{ doctorId, scheduledAt (ISO, future), symptoms? }`. Validates working hours/day (IST) and slot-duration alignment, rejects if the doctor is on leave, and is race-safe against double-booking (see SYSTEM_DESIGN.md). Triggers a booking-confirmation email and calendar sync for both parties, and — if `symptoms` was given — automatically runs the pre-visit AI analysis (§5) before returning |
 | PATCH | `/:id/cancel` | Owning patient, assigned doctor, or admin | Body: `{ reason? }`. Deletes both calendar events and emails both parties |
 | PATCH | `/:id/reschedule` | Owning patient or assigned doctor | Body: `{ scheduledAt }`. Same conflict-safety as booking; updates (not recreates) existing calendar events |
-| POST | `/:id/pre-visit-summary` | Owning patient | Body: `{ symptoms? }` (defaults to the appointment's stored symptoms). Calls the LLM with the exact pre-visit prompt (§5) and stores urgency + summary |
-| POST | `/:id/post-visit-summary` | Assigned doctor | Body: `{ notes }`. Calls the LLM with the exact post-visit prompt (§5), stores the patient-friendly summary, computes `followUpDate`, and marks the appointment `COMPLETED` |
+| POST | `/:id/pre-visit-summary` | Owning patient | Body: `{ symptoms? }` (defaults to the appointment's stored symptoms). Calls the LLM with the exact pre-visit prompt (§5) and stores `triageLevel` + `aiPreVisitSummary` |
+| POST | `/:id/post-visit-summary` | Assigned doctor | Body: `{ doctorNotes }`. Calls the LLM with the exact post-visit prompt (§5), stores `doctorNotes` + `aiPostVisitSummary`, computes `followUpDate`, marks the appointment `COMPLETED`, and emails the patient their prescription/follow-up schedule |
 
 ### Calendar — `/api/calendar`
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| GET | `/oauth/url` | Any authenticated user | Returns `{ url }` — the Google consent screen URL for the caller to connect their calendar |
+| GET | `/oauth/url` | Any authenticated user | Returns `{ url }` — the Google consent screen URL for the caller to connect their calendar. The frontend's `/settings` page (linked from the header for patients/doctors) drives this flow |
 | GET | `/oauth/callback` | Public (Google redirects the browser here) | Exchanges the auth code for tokens and stores them on the user; redirects to `${CLIENT_URL}/settings?calendar=connected\|error` |
 
 ### Error format
@@ -206,6 +229,9 @@ Analyse these symptoms and return: urgency level (Low / Medium / High), chief co
 
 Expected JSON shape: `{ urgencyLevel: "Low"|"Medium"|"High", chiefComplaint: string, suggestedQuestions: [string, string, string] }`
 
+Run automatically at booking time if `symptoms` was provided (in addition to
+being triggerable standalone via the endpoint above).
+
 **Post-visit prompt** (`POST /appointments/:id/post-visit-summary`):
 
 ```
@@ -215,6 +241,9 @@ Convert these clinical notes into a patient-friendly summary with medication sch
 Expected JSON shape: `{ patientSummary: string, medicationSchedule: [{ medication, dosage, schedule }], followUpSteps: string, followUpInDays: integer|null }`
 
 `followUpInDays` is used to compute `Appointment.followUpDate = scheduledAt + followUpInDays days`.
+The resulting `patientSummary`, medication schedule, and follow-up
+date/steps are also emailed directly to the patient once the doctor submits
+this endpoint (see `notificationService.sendPostVisitSummary`).
 
 On any failure (network error, bad key, malformed JSON), both endpoints
 store a fallback object instead of throwing — see `PRE_VISIT_FALLBACK` /
@@ -243,14 +272,30 @@ store a fallback object instead of throwing — see `PRE_VISIT_FALLBACK` /
    GOOGLE_CLIENT_SECRET=...
    GOOGLE_REDIRECT_URI=http://localhost:5000/api/calendar/oauth/callback
    ```
-6. In the app, an authenticated user connects their calendar by visiting the
-   URL returned from `GET /api/calendar/oauth/url` (this is a per-user,
-   opt-in connection for both patients and doctors — each side's calendar
-   event is created independently, so a booking only appears on the
-   calendars of parties who've connected). The requested scope is
-   `https://www.googleapis.com/auth/calendar.events`, requested with
-   `access_type=offline&prompt=consent` so a refresh token is issued and
-   access tokens can be silently renewed thereafter.
+6. In the app, an authenticated user connects their calendar from the
+   **Settings** page (`/settings`, linked from the header for patients and
+   doctors), which calls `GET /api/calendar/oauth/url` and redirects the
+   browser there. This is a per-user, opt-in connection for both patients
+   and doctors — each side's calendar event is created independently, so a
+   booking only appears on the calendars of parties who've connected. The
+   requested scope is `https://www.googleapis.com/auth/calendar.events`,
+   requested with `access_type=offline&prompt=consent` so a refresh token is
+   issued and access tokens can be silently renewed thereafter.
+
+### Troubleshooting
+
+- **`Error 400: redirect_uri_mismatch`** — the URI Google receives must
+  match an entry in the client's **Authorized redirect URIs** list
+  character-for-character (scheme, host, port, and path), or the request is
+  rejected before the consent screen even loads. Re-check step 4 above.
+- **`Error 403: access_denied` / "has not completed the Google verification
+  process"** — while the OAuth consent screen is in **Testing** mode (the
+  default, and the right choice for local dev), only Google accounts
+  explicitly added under **OAuth consent screen → Test users** can complete
+  the flow — every patient/doctor account you test with needs to be added
+  individually (up to 100). Publishing to "In production" removes this
+  allowlist but triggers Google's verification review for the Calendar
+  scope, which is unnecessary overhead for local development.
 
 ---
 
@@ -264,8 +309,8 @@ live in `server/prisma/migrations/`.
 ```prisma
 enum Role              { ADMIN DOCTOR PATIENT }
 enum AppointmentStatus { PENDING CONFIRMED CANCELLED COMPLETED NO_SHOW }
-enum UrgencyLevel      { LOW MEDIUM HIGH }
 enum ReminderStatus    { PENDING SENT FAILED }
+enum ApprovalStatus    { PENDING APPROVED REJECTED }
 ```
 
 ### `User` (`users`)
@@ -292,9 +337,10 @@ patient and as doctor, many `MedicationReminder`.
 | userId | uuid | unique FK → `User.id`, cascade delete |
 | specialization | string | |
 | bio | string? | |
-| workingHoursStart / workingHoursEnd | string | `"HH:MM"`, default `09:00`/`17:00` |
+| workingHoursStart / workingHoursEnd | string | `"HH:MM"`, **IST**, default `09:00`/`17:00` |
 | workingDays | int[] | `0`=Sun..`6`=Sat, default `[1,2,3,4,5]` |
 | slotDurationMinutes | int | default `30` |
+| status | ApprovalStatus | default `PENDING`. `PENDING` doctors can't log in and don't appear in search; only an admin can move this to `APPROVED`/`REJECTED`. Working hours/days/slot duration can only be edited by an admin, and only once `APPROVED` — doctors have no self-service schedule access |
 | createdAt / updatedAt | datetime | |
 
 Relations: many `DoctorLeave`.
@@ -305,8 +351,9 @@ Relations: many `DoctorLeave`.
 |---|---|---|
 | id | uuid PK | |
 | doctorId | uuid | FK → `DoctorProfile.id`, cascade delete, indexed |
-| startDate / endDate | datetime | inclusive range |
+| startDate / endDate | datetime | inclusive range, interpreted as IST calendar days when given as `YYYY-MM-DD` |
 | reason | string? | |
+| status | ApprovalStatus | default `PENDING`. Admin-logged leave (`POST /admin/doctors/:id/leaves`) is created `APPROVED` directly; doctor-requested leave (`POST /leaves`) starts `PENDING` and only blocks bookings / cancels conflicting appointments once an admin approves it. Indexed |
 | createdAt | datetime | |
 
 ### `Appointment` (`appointments`)
@@ -315,18 +362,18 @@ Relations: many `DoctorLeave`.
 |---|---|---|
 | id | uuid PK | |
 | patientId / doctorId | uuid | FK → `User.id` (both), cascade delete |
-| scheduledAt | datetime | |
+| scheduledAt | datetime | stored as an absolute UTC instant; interpreted/displayed everywhere as IST |
 | durationMinutes | int | default `30`, copied from the doctor's `slotDurationMinutes` at booking time |
 | status | AppointmentStatus | default `PENDING` |
 | symptoms | string? | patient-entered |
-| urgencyLevel | UrgencyLevel? | from the pre-visit LLM call |
-| preVisitSummary | string? | raw JSON from the pre-visit LLM call |
-| postVisitNotes | string? | raw clinical notes entered by the doctor |
-| postVisitSummary | string? | raw JSON from the post-visit LLM call |
+| triageLevel | string? | AI-derived urgency (`LOW`\|`MEDIUM`\|`HIGH`) from the pre-visit LLM call |
+| aiPreVisitSummary | string? | raw JSON from the pre-visit LLM call (chief complaint + suggested questions) |
+| doctorNotes | string? | raw clinical notes entered by the doctor |
+| aiPostVisitSummary | string? | raw JSON from the post-visit LLM call (patient-friendly summary + medication schedule + follow-up steps) |
 | followUpInDays | int? | extracted by the post-visit LLM call |
 | followUpDate | datetime? | `scheduledAt + followUpInDays` |
 | patientCalendarEventId / doctorCalendarEventId | string? | Google Calendar event ids, one per connected party |
-| reminderSentAt | datetime? | set once the upcoming-appointment reminder has been sent |
+| reminderSentAt | datetime? | last time the repeating appointment reminder was sent (informational — doesn't gate resending; see `APPOINTMENT_REMINDER_CRON` in §2) |
 | createdAt / updatedAt | datetime | |
 
 Indexes: `[doctorId, scheduledAt]`, `[patientId]`.

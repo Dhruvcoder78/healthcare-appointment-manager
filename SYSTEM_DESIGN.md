@@ -1,8 +1,9 @@
 # System Design
 
-Four mechanisms that needed careful concurrency/reliability thinking: double-booking
-prevention, doctor-leave conflict handling, slot holding, and notification failure
-handling. Full API/schema reference: [README.md](./README.md).
+Five mechanisms that needed careful concurrency/reliability/correctness
+thinking: double-booking prevention, doctor-leave conflict handling, slot
+holding, notification failure handling, and timezone handling. Full
+API/schema reference: [README.md](./README.md).
 
 ## 1. Double-booking prevention
 
@@ -34,19 +35,31 @@ the appointment moves.
 
 ## 2. Doctor leave conflict handling
 
-Marking a doctor on leave (`POST /admin/doctors/:id/leaves`) runs the leave
-creation and the resulting cleanup in one transaction: create the
-`DoctorLeave` row, then `findMany` every `PENDING`/`CONFIRMED` appointment
-whose `scheduledAt` falls in `[startDate, endDate]` for that doctor, then
-bulk-`updateMany` them to `CANCELLED`. Doing this atomically means a leave
-is never recorded without its conflicting appointments being resolved (or
-vice versa) — the two facts can't diverge.
+There are two paths onto a `DoctorLeave` row, sharing one `ApprovalStatus`
+field and one cleanup routine: an admin logging leave directly
+(`POST /admin/doctors/:id/leaves`) is created `APPROVED` immediately — the
+admin *is* the approver — while a doctor requesting their own leave
+(`POST /leaves`) is created `PENDING` and has **no effect** (doesn't block
+bookings, doesn't cancel anything) until an admin approves it
+(`POST /admin/leaves/:leaveId/approve`). This means a doctor can never
+unilaterally cancel their own patients' appointments by self-declaring
+leave — admin approval is the single gate for that side effect, regardless
+of which path created the row.
 
-Symmetrically, active `DoctorLeave` ranges are checked *before* any new
+Whichever path reaches `APPROVED`, the conflict cleanup is identical and
+runs in one transaction: create/update the `DoctorLeave` row, then
+`findMany` every `PENDING`/`CONFIRMED` appointment whose `scheduledAt` falls
+in `[startDate, endDate]` for that doctor, then bulk-`updateMany` them to
+`CANCELLED`. Doing this atomically means a leave is never recorded as
+approved without its conflicting appointments being resolved (or vice
+versa) — the two facts can't diverge.
+
+Symmetrically, `APPROVED` `DoctorLeave` ranges are checked *before* any new
 booking or reschedule is allowed to proceed (`409` if the target time falls
-inside one), so the two paths — "block new bookings during leave" and
-"cancel existing bookings when leave is declared" — cover both directions
-of the conflict.
+inside one) — a `PENDING` leave request has no effect on availability, only
+an approved one does — so the two paths, "block new bookings during
+approved leave" and "cancel existing bookings when leave is approved", cover
+both directions of the conflict.
 
 After the transaction commits, the handler (best-effort, outside the
 transaction) deletes both parties' Google Calendar events and emails
@@ -93,3 +106,42 @@ rescheduling `nextSendAt` on success. Verified end-to-end: a due reminder
 failed against a broken SMTP host, was retried and failed again
 (`retryCount: 2`), then succeeded once SMTP was restored, resetting
 `retryCount` to `0` and correctly advancing `nextSendAt`.
+
+The upcoming-appointment reminder job (`appointmentReminders.js`) is
+deliberately **stateless and repeating** rather than a one-time "day
+before" notice: every run (`APPOINTMENT_REMINDER_CRON`, default every 5
+minutes) simply re-queries every `PENDING`/`CONFIRMED` appointment with
+`scheduledAt` still in the future and re-emails both parties — no "already
+reminded" flag gates it. This was a deliberate product choice (repeat
+reminders right up to the appointment), and it keeps the job trivially
+correct: there's no state machine to get wrong, and it naturally stops
+emailing the moment `scheduledAt` passes or the appointment is
+cancelled/completed, since either removes it from the query.
+
+## 5. Timezone handling (IST)
+
+Every timestamp in the system is stored as an absolute UTC instant
+(Postgres/Prisma `DateTime`), but the product is IST-only: doctor working
+hours, booking/reschedule input, and every displayed timestamp are all
+interpreted and shown in IST (Asia/Kolkata, UTC+5:30, no DST) regardless of
+the server's or the viewer's own local timezone. Rather than pull in a
+timezone library for a single fixed, DST-free offset, this is done with a
+plain arithmetic shift applied consistently in a small number of places:
+
+- **Backend** (`scheduling.js`): `isWithinWorkingHours`/`isAlignedToSlotGrid`
+  shift `scheduledAt` by +5:30 before reading day-of-week/hour/minute, so a
+  doctor's `"09:00"`–`"17:00"` is genuinely 9am–5pm IST, not UTC.
+  `parseDateBoundary` parses bare `YYYY-MM-DD` leave/query dates with an
+  explicit `+05:30` suffix so they mean IST calendar days.
+- **Frontend**: booking/reschedule forms parse the entered date+time with
+  the same `+05:30` suffix before sending `scheduledAt`; `formatDateTime`/
+  `formatDate` force `timeZone: 'Asia/Kolkata'` in `toLocaleString` so a
+  viewer's device timezone can never produce a different displayed time for
+  the same instant; `slots.js` computes "now"/"today" the same way so the
+  slot picker never offers a time that's already passed in IST.
+
+Net effect: entering "15:30" as a booking time and later seeing "15:30" on
+any dashboard, from any device, are the same instant — verified directly
+against the working-hours validator (a 15:30 IST booking against `09:00`–
+`17:00` IST hours succeeds; the same clock time as UTC would have been
+rejected as outside hours, and was, before this was fixed).

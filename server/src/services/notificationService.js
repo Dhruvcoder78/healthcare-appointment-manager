@@ -1,7 +1,11 @@
 const { sendMail } = require('./emailService');
 
 function formatWhen(date) {
-  return new Date(date).toUTCString();
+  return `${new Date(date).toLocaleString('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone: 'Asia/Kolkata',
+  })} IST`;
 }
 
 // sendMail already never throws (returns {success, error}), so a failure to
@@ -68,9 +72,46 @@ function sendAppointmentReminder(appointment, patient, doctor) {
   });
 }
 
+// Emails the patient their post-visit summary once the doctor completes the
+// appointment: the AI-generated patient-friendly summary, medication
+// schedule, and follow-up steps/date. Patient-only — the doctor already has
+// their own raw clinical notes.
+async function sendPostVisitSummary(appointment, patient, doctor, summaryData) {
+  const { patientSummary, medicationSchedule, followUpSteps } = summaryData;
+
+  const medicationText =
+    medicationSchedule?.length > 0
+      ? medicationSchedule
+          .map((m) => `- ${m.medication}${m.dosage ? ` (${m.dosage})` : ''}: ${m.schedule}`)
+          .join('\n')
+      : 'No medication prescribed.';
+
+  const followUpText = appointment.followUpDate
+    ? `Follow up by: ${formatWhen(appointment.followUpDate)}`
+    : followUpSteps || 'No follow-up scheduled.';
+
+  const text = [
+    `Hi ${patient.name}, here is a summary of your visit with Dr. ${doctor.name} on ${formatWhen(appointment.scheduledAt)}.`,
+    '',
+    patientSummary,
+    '',
+    'Medication schedule:',
+    medicationText,
+    '',
+    followUpText,
+  ].join('\n');
+
+  const result = await sendMail({ to: patient.email, subject: 'Your Visit Summary & Prescription', text });
+  if (!result.success) {
+    console.error(`[notificationService] failed to email post-visit summary to patient ${patient.email}:`, result.error);
+  }
+  return result;
+}
+
 module.exports = {
   sendBookingConfirmation,
   sendCancellationNotice,
   sendRescheduleNotice,
   sendAppointmentReminder,
+  sendPostVisitSummary,
 };

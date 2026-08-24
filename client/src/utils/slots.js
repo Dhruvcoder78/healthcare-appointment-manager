@@ -1,13 +1,17 @@
-// Generates the list of valid slot start times ("HH:MM", UTC) for a given
-// date and doctor profile, purely from workingDays/workingHoursStart/
-// workingHoursEnd/slotDurationMinutes. This mirrors the backend's
-// isWithinWorkingHours/isAlignedToSlotGrid logic so the picker only ever
-// offers times the server will actually accept — the server remains the
-// source of truth for conflicts (already-booked slots, leave) via its own
-// validation on submit.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+// Generates the list of valid slot start times ("HH:MM", IST) for a given
+// IST calendar date and doctor profile, purely from workingDays/
+// workingHoursStart/workingHoursEnd/slotDurationMinutes. This mirrors the
+// backend's isWithinWorkingHours/isAlignedToSlotGrid logic so the picker
+// only ever offers times the server will actually accept — the server
+// remains the source of truth for conflicts (already-booked slots, leave)
+// via its own validation on submit.
 export function generateSlotsForDate(dateStr, doctorProfile) {
   if (!dateStr || !doctorProfile) return [];
 
+  // Day-of-week for a calendar date is timezone-independent, so midnight UTC
+  // of that same Y-M-D gives the correct weekday.
   const day = new Date(`${dateStr}T00:00:00.000Z`).getUTCDay();
   if (!doctorProfile.workingDays.includes(day)) return [];
 
@@ -17,9 +21,9 @@ export function generateSlotsForDate(dateStr, doctorProfile) {
   const endMinutes = endH * 60 + endM;
   const duration = doctorProfile.slotDurationMinutes;
 
-  const now = new Date();
-  const isToday = dateStr === now.toISOString().slice(0, 10);
-  const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const nowIST = new Date(Date.now() + IST_OFFSET_MS);
+  const isToday = dateStr === nowIST.toISOString().slice(0, 10);
+  const nowMinutes = nowIST.getUTCHours() * 60 + nowIST.getUTCMinutes();
 
   const slots = [];
   for (let t = startMinutes; t + duration <= endMinutes; t += duration) {

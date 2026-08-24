@@ -5,10 +5,13 @@ import { getErrorMessage } from '../../api/client';
 import { listMyAppointments } from '../../api/appointments';
 import DoctorQueue from './DoctorQueue';
 import RequestLeaveForm from './RequestLeaveForm';
-import ScheduleForm from './ScheduleForm';
 
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+// The doctor's date picker filters appointments for an IST calendar day (see
+// server/src/utils/scheduling.js), so "today" must be computed in IST too.
 function todayISODate() {
-  return new Date().toISOString().slice(0, 10);
+  return new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
 }
 
 export default function DoctorDashboard() {
@@ -48,7 +51,7 @@ export default function DoctorDashboard() {
     <Layout>
       <div className="mx-auto max-w-2xl space-y-6">
         <Card>
-          <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <Input label="Date (IST)" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </Card>
 
         {loading ? (
@@ -61,7 +64,6 @@ export default function DoctorDashboard() {
           <DoctorQueue appointments={appointments} onChanged={fetchQueue} />
         )}
 
-        <ScheduleForm />
         <RequestLeaveForm />
       </div>
     </Layout>
