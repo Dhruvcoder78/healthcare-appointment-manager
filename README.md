@@ -8,7 +8,7 @@ notifications, Google Calendar sync, and background reminder jobs.
 - **Frontend:** React (Vite), Tailwind CSS
 - **Auth:** JWT with Role-Based Access Control (ADMIN, DOCTOR, PATIENT)
 - **AI:** OpenAI API (or any OpenAI-compatible LLM — e.g. Groq) for clinical summaries
-- **Notifications:** Nodemailer (SMTP) + node-cron background jobs
+- **Notifications:** Resend (HTTP API — not SMTP; see §2) + node-cron background jobs
 - **Calendar:** Google Calendar API (OAuth 2.0)
 - **Timezone:** the whole app treats IST (Asia/Kolkata, UTC+5:30) as its
   single canonical timezone — doctor working hours, booking/reschedule
@@ -27,7 +27,7 @@ handling.
 
 - Node.js 20+
 - A PostgreSQL 14+ instance (local install, or Docker — see below)
-- (Optional) an OpenAI API key, SMTP credentials, and Google OAuth
+- (Optional) an OpenAI API key, a Resend API key, and Google OAuth
   credentials — the app degrades gracefully without them (see
   [§4 graceful degradation](#4-graceful-degradation))
 
@@ -114,7 +114,7 @@ accounts directly.
 | `OPENAI_API_KEY` | No | Without it, pre/post-visit summary endpoints still work — they return a safe fallback (see §5 and §4) |
 | `OPENAI_BASE_URL` | No (default `https://api.openai.com/v1`) | Point this at any OpenAI-compatible endpoint — Azure OpenAI, a local proxy, or a free alternative like Groq (`https://api.groq.com/openai/v1`) |
 | `OPENAI_MODEL` | No (default `gpt-4o-mini`) | Any chat-completion model that supports `response_format: json_object`, available on whichever `OPENAI_BASE_URL` you're pointed at (e.g. `openai/gpt-oss-20b` on Groq) — check your provider's current model list, since model names get deprecated |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | No | Without valid SMTP, emails fail silently (logged, never crash a request) — see §4. For Gmail: `smtp.gmail.com`, port `587`, `SMTP_SECURE=false`, and an [App Password](https://myaccount.google.com/apppasswords) (not your account password) as `SMTP_PASS` |
+| `RESEND_API_KEY` / `RESEND_FROM` | No | Without a valid key, emails fail silently (logged, never crash a request) — see §4. Uses [Resend](https://resend.com)'s HTTP API deliberately, not SMTP — many hosts (Render included) block outbound SMTP ports (25/465/587) to prevent spam abuse, which makes any SMTP provider (Gmail, Brevo, etc.) time out from a deployed server regardless of credentials; an HTTPS API call is unaffected. On Resend's free tier, `RESEND_FROM` must be `onboarding@resend.dev` until you verify a custom sending domain |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` | No | Needed only for Google Calendar sync — see §6 for setup |
 | `MEDICATION_REMINDER_CRON` | No (default `*/15 * * * *`) | How often the medication-reminder job checks for due reminders |
 | `EMAIL_RETRY_CRON` | No (default `*/10 * * * *`) | How often failed reminder emails are retried |
@@ -206,7 +206,7 @@ unavailable or unconfigured:
 
 - **No/invalid `OPENAI_API_KEY`:** pre/post-visit summary endpoints still
   return `200`/`201` with a safe fallback payload and `generatedByAI: false`.
-- **No/invalid SMTP config:** notification emails fail silently (logged
+- **No/invalid `RESEND_API_KEY`:** notification emails fail silently (logged
   server-side); booking, cancelling, and rescheduling still succeed.
 - **No connected Google Calendar:** calendar sync is skipped per-user
   (checked independently for patient and doctor); the appointment is still

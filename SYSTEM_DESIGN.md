@@ -89,13 +89,24 @@ place for reminders.
 
 ## 4. Notification failure handling
 
-`emailService.sendMail` never throws — it wraps Nodemailer in try/catch and
-always resolves to `{ success, error? }`. `notificationService` sends to
-patient and doctor in parallel via `Promise.all` and logs (but does not
-propagate) any failure, so one bad address never blocks the other recipient
-or the triggering request (booking/cancel/reschedule all return `2xx` even
-if SMTP is fully down — verified by testing with an intentionally broken
-SMTP host).
+`emailService.sendMail` never throws — it wraps a `fetch` call to Resend's
+HTTP API in try/catch and always resolves to `{ success, error? }`.
+`notificationService` sends to patient and doctor in parallel via
+`Promise.all` and logs (but does not propagate) any failure, so one bad
+address never blocks the other recipient or the triggering request
+(booking/cancel/reschedule all return `2xx` even if email delivery is fully
+down — verified by testing with an intentionally broken config).
+
+Email is sent via Resend's HTTP API rather than raw SMTP (Nodemailer)
+specifically because SMTP doesn't work from most PaaS hosts: Render (and
+many others) block outbound SMTP ports (25/465/587) to prevent the
+platform being used for spam, so *any* SMTP provider — Gmail, Brevo,
+SendGrid's SMTP relay, all of them — times out identically from a deployed
+server regardless of credentials. This was confirmed directly: Gmail SMTP
+and Resend's own SMTP relay both failed with the exact same `Connection
+timeout` from Render, while switching to Resend's HTTPS API (same
+provider, different transport) worked immediately, since only SMTP ports
+are blocked, not port 443.
 
 For the send-and-forget notifications above, failure is simply logged.
 Medication reminders get real retry semantics because they're
@@ -103,8 +114,8 @@ recurring and time-sensitive: a failed send sets `status: FAILED` and
 increments `retryCount`; a separate `EMAIL_RETRY_CRON` job re-attempts any
 `FAILED` reminder with `retryCount < 5`, resetting to `PENDING` and
 rescheduling `nextSendAt` on success. Verified end-to-end: a due reminder
-failed against a broken SMTP host, was retried and failed again
-(`retryCount: 2`), then succeeded once SMTP was restored, resetting
+failed against a broken config, was retried and failed again
+(`retryCount: 2`), then succeeded once restored, resetting
 `retryCount` to `0` and correctly advancing `nextSendAt`.
 
 The upcoming-appointment reminder job (`appointmentReminders.js`, default
