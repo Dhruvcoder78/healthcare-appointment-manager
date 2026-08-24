@@ -8,14 +8,18 @@ import { DAY_LABELS } from '../utils/format';
 const ROLE_TABS = [
   { value: 'PATIENT', label: 'Patient' },
   { value: 'DOCTOR', label: 'Doctor' },
+  { value: 'ADMIN', label: 'Admin' },
 ];
 
 const HEADING_BY_ROLE = {
   PATIENT: 'Patient registration',
   DOCTOR: 'Doctor registration',
+  ADMIN: 'Admin registration',
 };
 
 const SLOT_DURATION_OPTIONS = [15, 30, 45, 60];
+
+const HOME_BY_ROLE = { ADMIN: '/admin', DOCTOR: '/doctor', PATIENT: '/patient' };
 
 const DEFAULT_FORM = {
   name: '',
@@ -39,7 +43,7 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
 
   if (user) {
-    return <Navigate to="/patient" replace />;
+    return <Navigate to={HOME_BY_ROLE[user.role] || '/patient'} replace />;
   }
 
   function update(field) {
@@ -67,7 +71,7 @@ export default function RegisterPage() {
       if (response.pendingApproval) {
         setPendingMessage(response.message);
       } else {
-        navigate('/patient', { replace: true });
+        navigate(HOME_BY_ROLE[response.user.role] || '/patient', { replace: true });
       }
     } catch (err) {
       setError(getErrorMessage(err));

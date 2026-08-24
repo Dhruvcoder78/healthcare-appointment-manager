@@ -11,7 +11,13 @@ const leaveRoutes = require('./routes/leaveRoutes');
 
 const app = express();
 
-app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173' }));
+// .trim() guards against a stray trailing newline/whitespace in the
+// platform env var (e.g. pasted from a browser address bar into a hosting
+// dashboard), which otherwise crashes every request with
+// ERR_INVALID_CHAR when `cors` tries to set the Access-Control-Allow-Origin
+// header.
+const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').trim();
+app.use(cors({ origin: clientUrl }));
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {

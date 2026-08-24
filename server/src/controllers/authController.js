@@ -12,14 +12,17 @@ function sanitizeUser(user) {
   return { ...safe, googleCalendarConnected: Boolean(googleRefreshToken) };
 }
 
-const SELF_REGISTERABLE_ROLES = ['PATIENT', 'DOCTOR'];
+const SELF_REGISTERABLE_ROLES = ['PATIENT', 'DOCTOR', 'ADMIN'];
 
-// Public self-registration. Only PATIENT and DOCTOR may self-register —
-// ADMIN accounts are never created through this endpoint (allowing an
-// arbitrary caller to request role: 'ADMIN' would be an unauthenticated
-// privilege escalation). A self-registered DOCTOR gets an unapproved
-// DoctorProfile: they can't log in and won't appear in patient search until
-// an admin approves them (see adminController.approveDoctor).
+// Public self-registration for PATIENT, DOCTOR, or ADMIN. A self-registered
+// DOCTOR gets an unapproved DoctorProfile: they can't log in and won't
+// appear in patient search until an admin approves them (see
+// adminController.approveDoctor). ADMIN self-registration is unrestricted
+// by deliberate choice — anyone who can reach /register can grant
+// themselves full admin rights (approve/reject doctors, cancel any
+// appointment, edit any doctor's schedule). Fine for a private demo; not
+// suitable for a real deployment without adding a gate (invite code, email
+// domain allowlist, or manual promotion) in front of this role.
 async function register(req, res, next) {
   try {
     const {
