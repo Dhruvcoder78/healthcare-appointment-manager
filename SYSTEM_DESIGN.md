@@ -112,6 +112,24 @@ address, while Brevo only requires verifying a single sender email and
 places no such restriction on recipients — a better fit without an owned
 domain to verify.
 
+> **Known deployment issue (as of this writing):** the production Brevo
+> account is currently `Suspended` in their Deliverability Center pending
+> manual review by Brevo's Customer Experience team — a common outcome for
+> a brand-new transactional-email account, seemingly triggered here by
+> several rapid test sends during initial setup reading as suspicious
+> activity to their automated review. This is an account-status issue on
+> Brevo's side, not a code defect: the graceful-degradation design above is
+> exactly what's absorbing it in production right now — bookings,
+> cancellations, and reschedules all still succeed normally, with the
+> notification failure only logged (`[notificationService] failed to email
+> ... Brevo 403: ... "Terms of use"`). Two paths forward once addressing
+> this: (1) wait for/follow up on Brevo's review via their Support page, or
+> (2) switch back to Resend and complete its domain-verification flow if a
+> domain is available — a fully self-service path with no manual review
+> step. `emailService.js` only needs its provider-specific `fetch` call
+> swapped to move between them; the rest of the notification pipeline is
+> provider-agnostic.
+
 For the send-and-forget notifications above, failure is simply logged.
 Medication reminders get real retry semantics because they're
 recurring and time-sensitive: a failed send sets `status: FAILED` and
