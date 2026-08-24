@@ -89,7 +89,7 @@ place for reminders.
 
 ## 4. Notification failure handling
 
-`emailService.sendMail` never throws — it wraps a `fetch` call to Resend's
+`emailService.sendMail` never throws — it wraps a `fetch` call to Brevo's
 HTTP API in try/catch and always resolves to `{ success, error? }`.
 `notificationService` sends to patient and doctor in parallel via
 `Promise.all` and logs (but does not propagate) any failure, so one bad
@@ -97,16 +97,20 @@ address never blocks the other recipient or the triggering request
 (booking/cancel/reschedule all return `2xx` even if email delivery is fully
 down — verified by testing with an intentionally broken config).
 
-Email is sent via Resend's HTTP API rather than raw SMTP (Nodemailer)
+Email is sent via an HTTP API rather than raw SMTP (Nodemailer)
 specifically because SMTP doesn't work from most PaaS hosts: Render (and
 many others) block outbound SMTP ports (25/465/587) to prevent the
-platform being used for spam, so *any* SMTP provider — Gmail, Brevo,
+platform being used for spam, so *any* SMTP provider — Gmail, Resend,
 SendGrid's SMTP relay, all of them — times out identically from a deployed
 server regardless of credentials. This was confirmed directly: Gmail SMTP
 and Resend's own SMTP relay both failed with the exact same `Connection
-timeout` from Render, while switching to Resend's HTTPS API (same
-provider, different transport) worked immediately, since only SMTP ports
-are blocked, not port 443.
+timeout` from Render, while an HTTPS API call worked immediately, since
+only SMTP ports are blocked, not port 443. Brevo specifically (over
+Resend, tried first) because Resend's free tier requires verifying a whole
+domain before you can send to any recipient besides your own signup
+address, while Brevo only requires verifying a single sender email and
+places no such restriction on recipients — a better fit without an owned
+domain to verify.
 
 For the send-and-forget notifications above, failure is simply logged.
 Medication reminders get real retry semantics because they're
